@@ -5,7 +5,13 @@ Supabase, conta comprometida, corrupção de dados) e **testado de verdade a cad
 runbook nunca testado é ficção — não é critério de "pronto" até a primeira execução real estar
 registrada na seção 4.
 
-Pré-requisito: backup existente e íntegro, produzido por `scripts/backup.sh` (ver
+Este documento cobre dois desastres diferentes, testados no mesmo ciclo trimestral:
+
+- **Seção 3:** perda ou corrupção do dado (banco/Storage) — restore a partir do backup.
+- **Seção 5:** perda do acesso de escrita da `editor` única — recuperação por código impresso
+  (D9, `docs/04-DECISOES.md`).
+
+Pré-requisito da seção 3: backup existente e íntegro, produzido por `scripts/backup.sh` (ver
 `docs/ops/backup.md`). Sem backup, não há o que restaurar.
 
 ---
@@ -130,13 +136,121 @@ cd .. && rm -rf restore-tmp
 Preencher a cada execução — teste trimestral **ou** incidente real. Sem entrada aqui, o restore
 não é considerado validado, independentemente de o procedimento "parecer" correto.
 
-| Data | Tipo (teste trimestral / incidente real) | Backup usado (timestamp) | Destino | Resultado | RTO observado | Executado por | Observações |
-|---|---|---|---|---|---|---|---|
-| _(nenhum teste executado ainda)_ | — | — | — | — | — | — | Pendente — primeiro teste trimestral a agendar antes do fim de F0/início de F1. Até esta linha ganhar uma entrada real, o backup **não** atende ao critério de pronto (ver `.claude/agents/devops.md`). |
+O teste trimestral cobre **as duas seções deste runbook no mesmo ciclo**: restore de backup
+(seção 3) e verificação de um código de recuperação da editora (seção 5). São desastres
+diferentes; agendar os dois juntos evita que um deles vá ficando sempre para o próximo trimestre.
+
+| Data | Tipo (teste trimestral / incidente real) | Backup usado (timestamp) | Destino | Resultado restore | RTO observado | Código de recuperação testado (nº do código / resultado) | Executado por | Observações |
+|---|---|---|---|---|---|---|---|---|
+| _(nenhum teste executado ainda)_ | — | — | — | — | — | — | — | Pendente — primeiro teste trimestral a agendar antes do fim de F0/início de F1. Até esta linha ganhar uma entrada real, nem o backup nem a recuperação de acesso atendem ao critério de pronto (ver `.claude/agents/devops.md`). |
 
 Regra de cadência: uma entrada nova a cada trimestre corrido, no máximo. Se um trimestre passar
 sem teste, isso é uma lacuna a escalar, não a esconder.
 
-Se um teste **falhar**: registrar o resultado como "Falhou" com a causa, e escalar
-imediatamente à dona do projeto — não é suficiente documentar e seguir para o próximo item do
-backlog.
+Se um teste **falhar** (restore ou código de recuperação): registrar o resultado como "Falhou"
+com a causa, e escalar imediatamente à dona do projeto — não é suficiente documentar e seguir
+para o próximo item do backlog.
+
+---
+
+## 5. Recuperação de acesso da `editor` única — código impresso (D9)
+
+Decisão travada em `docs/04-DECISOES.md` (D9) e prevista em
+`docs/adr/0003-auth-magic-link-cpf-alias-totp.md`: a `editor` é única (D4), TOTP é obrigatório
+para `editor`/`conselho` (AAL2, ADR-0003/0012), e **não existe um segundo `editor` para
+reconceder acesso**. A contenção é operacional, não técnica: códigos de recuperação impressos,
+gerados uma vez e guardados fora de casa.
+
+> **Isto precisa estar dito sem meias palavras:** o acesso de **escrita** do Breeze (publicar
+> documento, conferir balancete, responder questionamento — tudo que só `editor` faz, SPEC §2.1)
+> depende de duas coisas existindo ao mesmo tempo: o celular com o autenticador TOTP da editora,
+> **ou** o papel com os códigos impressos. **Perder os dois ao mesmo tempo — celular e papel —
+> é perda total do acesso de escrita do sistema.** Não há conta de emergência, não há segundo
+> editor, não há "recuperar por e-mail" para o fator TOTP. O acervo continua **legível** por
+> `conselho` e `morador` (a leitura não depende do TOTP da editora), mas ninguém publica nada
+> novo, concilia balancete ou responde questionamento até o acesso de escrita ser restabelecido
+> — o que, sem um código válido, significa provisionar uma conta `editor` nova do zero, com todo
+> o atrito de identidade que isso implica.
+
+### 5.1 Geração dos códigos (cerimônia única, repetida só quando os códigos acabarem ou forem trocados)
+
+Executar no momento em que a `editor` fizer o enrollment do TOTP (primeira vez, ou depois de
+uma troca de dispositivo):
+
+```bash
+# Gera 10 códigos de uso único, formato legível para digitação manual.
+for i in $(seq 1 10); do
+  printf "%02d  %s\n" "$i" "$(openssl rand -hex 5 | tr 'a-f' 'A-F' | sed 's/\(.\{4\}\)/\1-/g;s/-$//')"
+done
+```
+
+Produz algo como `01  3F9A-2C11`. Cada linha é um código.
+
+1. **Nunca guardar os códigos em claro em nenhum lugar digital do produto** — não em `.env`, não
+   em tabela do banco, não em anexo de e-mail, não no gerenciador de tarefas. São segredo de
+   acesso, não dado do condomínio, e ficam **fora do sistema** de propósito: se o banco vazar
+   inteiro, os códigos continuam protegendo a conta.
+2. Guardar, fora do produto, só o **hash SHA-256** de cada código, para permitir conferência no
+   momento do uso (ex.: um arquivo num gerenciador de senha pessoal da dona do projeto, nunca no
+   repositório git):
+   ```bash
+   echo -n "3F9A-2C11" | shasum -a 256
+   ```
+3. **Imprimir** os 10 códigos em claro, numerados, com uma linha de instrução ("código de
+   recuperação de acesso do Breeze — usar só se perder o autenticador TOTP; ligar para [contato
+   técnico]").
+4. **Guardar o impresso fora de casa** — a decisão de onde exatamente (cofre no escritório,
+   com um parente de confiança, caixa de segurança bancária) é da dona do projeto; a exigência
+   dura é *fora de casa*, porque o cenário que este mecanismo existe para cobrir é justamente
+   "perdi o celular e não consigo TOTP" — se o papel estiver na mesma casa/bolsa que o celular,
+   um único evento (roubo, incêndio, celular caiu na piscina em férias) derruba os dois ao mesmo
+   tempo e o código não protege nada.
+5. Riscar fisicamente cada código assim que usado (uso único) e marcar o hash correspondente
+   como consumido no registro de hashes.
+
+### 5.2 Redenção — como um código volta a dar acesso
+
+Um código de recuperação não é uma segunda senha que o próprio sistema valida automaticamente
+numa tela — o Breeze não tem tela de "usar código de recuperação" no fluxo de login (isso seria
+mais uma feature de auth para especificar e testar, fora do escopo deste agente). O código é a
+**prova de posse fora de banda** que autoriza uma ação administrativa:
+
+1. A editora, sem TOTP disponível, contata o suporte técnico/dona do projeto por um canal já
+   conhecido (telefone, não e-mail — e-mail sozinho não prova identidade aqui).
+2. Ela informa um dos códigos impressos, número da linha incluído.
+3. Quem atende confere o hash do código informado contra o registro (§5.1, item 2). Bate →
+   prossegue. Não bate → não prossegue, é um possível golpe de engenharia social.
+4. Com a identidade confirmada, quem tem acesso ao projeto Supabase (hoje: a própria dona do
+   projeto, via `SUPABASE_SERVICE_ROLE_KEY` ou dashboard) **remove o fator MFA/TOTP atual** da
+   conta da `editor` no Supabase Auth (Dashboard → Authentication → Users → fator MFA da conta,
+   ou API Admin `auth.admin.mfa.deleteFactor`/endpoint equivalente — **confirmar o nome exato do
+   método contra a versão da API em uso no momento da execução real; não copiar cego de uma
+   versão antiga da doc**).
+5. A editora entra de novo por magic link (AAL1) e **reenrola um novo TOTP** na hora — sem isso
+   ela segue tratada como `morador` pelo helper de autorização (ADR-0003/0012), sem escrita.
+6. O código usado é riscado e marcado consumido (§5.1, item 5). Se restarem poucos códigos
+   (regra prática: menos de 3), gerar um lote novo de 10 e repetir a cerimônia de guarda.
+
+**Dependência técnica em aberto:** os passos 4–5 usam capacidade administrativa do Supabase Auth
+que existe hoje via dashboard/API, mas o Breeze ainda não tem um procedimento **testado** ponta a
+ponta nem um script de apoio para isso. Antes do primeiro teste trimestral real, `eng-supabase`
+precisa confirmar (ou implementar, se faltar) o comando exato de remoção de fator MFA por
+`service_role` e validar que o reenrollment funciona sem intervenção manual no banco. Até essa
+confirmação, o item 4 deste procedimento é a maior incerteza do runbook — reportar ao
+orquestrador se o primeiro teste trimestral esbarrar nisso.
+
+### 5.3 Teste trimestral do código de recuperação
+
+No mesmo ciclo do teste de restore (seção 3), sem esperar um incidente real:
+
+1. Escolher **um** código impresso (não gastar mais de um por teste).
+2. Rodar o procedimento de redenção completo (§5.2) **num ambiente de teste** — nunca revogar o
+   TOTP da conta de produção da editora só para testar; usar uma conta `editor` de teste com o
+   mesmo mecanismo, ou coordenar a janela com a dona do projeto se o teste tiver que ser na conta
+   real.
+3. Confirmar que a conta testada, ao final, consegue publicar algo trivial (ou simular a
+   permissão) só depois do reenrollment — prova de que o caminho de escrita realmente dependia
+   do TOTP e foi restabelecido, não que "parecia" ter funcionado.
+4. Registrar o resultado na tabela da seção 4 (coluna "Código de recuperação testado").
+5. Se o teste falhar (código não bate, remoção de fator não funciona, reenrollment trava): é
+   crítico, mesma regra da seção 1 — escalar imediatamente à dona do projeto.

@@ -20,6 +20,12 @@ parcela escaneada, fluxo incremental baixo (~5–20 documentos/mês).
 | ADR-6 | Extração nativa primeiro; OCR condicional via API paga | Regra: `< 100 chars/página` **ou** razão alta de gibberish → OCR. Atas antigas frequentemente têm camada de OCR ruim — pior que nenhuma. | Tesseract self-hosted (qualidade inferior em scan torto), OCR em toda página (custo e degradação). |
 | ADR-7 | Processamento pesado em worker Node persistente consumindo fila em Postgres; backfill histórico roda local, uma vez | O acervo é finito: um script na máquina do mantenedor resolve o histórico com custo zero. Só o incremental precisa de worker. | Vercel Functions (timeout, binários nativos), Edge Functions (limites para OCR). |
 
+Esta tabela é o resumo. Os ADRs completos — contexto, consequências e alternativas descartadas —
+vivem em `docs/adr/`, numerados de 0001 a 0016, e são a fonte quando houver dúvida. Além dos sete
+acima, F0 decidiu: estratégia de migração (0008), política de ambientes (0009), representação
+monetária (0010), imutabilidade de lançamento (0011), RLS como fronteira única (0012), auditoria
+encadeada (0013), tratamento de CPF (0014) e enum vs. tabela de domínio (0015).
+
 ### 1.2 Ambientes e custo
 
 Local (`supabase start`) → staging (Supabase free + preview Vercel) → produção (Supabase Pro).
@@ -33,42 +39,67 @@ backup e domínio ~10). Custo único de OCR + embeddings do acervo: R$50–300.
 
 ## 2. Modelo de dados
 
-`id uuid pk` em todas. **Valor monetário sempre `bigint` em centavos** — nunca float.
+`id uuid pk` em todas. **Valor monetário sempre `bigint` em centavos** — nunca float — e a
+coluna **carrega o sufixo `_centavos`**: `valor` sozinho não diz a unidade, e erro de unidade é
+invisível até virar 100× num relatório (ADR-0010).
+
+Desenho completo em DDL comentado: `docs/schema.md`. A tabela abaixo é o índice; ela e o schema
+não podem divergir.
 
 | Tabela | Colunas-chave | Índices | RLS |
 |---|---|---|---|
-| `unidades` | bloco, numero, fracao_ideal, area_m2 | `unique(bloco,numero)` | leitura: autenticados |
-| `pessoas` | auth_user_id, nome, email, `cpf_hash` (HMAC determinístico, para lookup), `cpf_enc` (reversível), telefone | `unique(cpf_hash)` | própria linha; `conselho` lê todas sem CPF; CPF em claro só para `editor`, via view |
+| `unidades` | bloco, `numero text` (existe "101-A", "Cob 02"), ordem, fracao_ideal, area_m2 | `unique(bloco,numero)` | leitura: autenticados; escrita `editor` |
+| `pessoas` | auth_user_id, nome, email, `cpf_hash` (HMAC determinístico, para lookup), `cpf_enc` (reversível), `cpf_ultimos_digitos`, telefone | `unique(cpf_hash)` | própria linha; `conselho` lê todas com CPF mascarado; CPF em claro só para `editor`, **decifrado em rotina de servidor** e registrado em `audit.acesso` — `cpf_enc` sem `SELECT` para `authenticated` |
 | `vinculos` | unidade_id, pessoa_id, tipo, inicio, fim | `(unidade_id, fim)` | própria unidade; conselho tudo |
-| `papeis` | pessoa_id, papel, mandato_inicio, mandato_fim | `(pessoa_id, mandato_fim)` | escrita só admin |
-| `documentos` | tipo, titulo, data_documento, competencia, storage_path, `sha256 unique`, paginas, ocr_aplicado, status, **visibilidade** | `(tipo, data_documento)` | por `visibilidade`: público / autenticado / conselho / restrito |
-| `documento_paginas` | documento_id, pagina, texto, texto_nativo, confianca_ocr | `unique(documento_id,pagina)` | **espelha `documentos`** |
+| `papeis` | pessoa_id, papel, mandato_inicio, mandato_fim, concedido_por | `(pessoa_id, mandato_fim)`, `(papel, mandato_inicio, mandato_fim)` | leitura: próprios papéis, gestão vê todos; **escrita só `editor` com AAL2** |
+| `tipos_documento` | codigo, nome, visibilidade_padrao, `permite_publico`, retencao_meses | pk textual | leitura livre; escrita `editor`. Tabela de domínio: taxonomia cresce sem deploy |
+| `documentos` | tipo, titulo, data_documento, competencia, storage_path, `sha256 unique`, paginas, ocr_aplicado, status, **visibilidade**, versao_pipeline | `(tipo, data_documento)`, `(visibilidade, status)` | por `visibilidade`: público / autenticado / conselho / restrito — sempre via `app.documento_visivel()` |
+| `documento_unidades` | documento_id, unidade_id | pk composta | leitura: própria unidade + gestão. **Sem ela, `visibilidade='restrito'` não é avaliável** |
+| `documento_paginas` | documento_id, pagina, texto, texto_nativo, fonte_texto, confianca_ocr | `unique(documento_id,pagina)` | **espelha `documentos`** |
 | `chunks` | documento_id, pagina_ini, pagina_fim, ordem, texto, `tsv` generated stored, `embedding vector(1536)` | GIN(tsv); HNSW só acima de ~10k linhas | **espelha `documentos` — crítico** |
-| `contas` | codigo, nome, natureza, conta_pai_id | árvore | leitura interna |
-| `lancamentos` | data_competencia, data_caixa, conta_id, fornecedor_id, historico, `valor_centavos`, tipo, fundo, **documento_id**, pagina_origem, origem, criado_por | `(competencia, conta_id)`, `(fornecedor_id)` | leitura autenticados; **escrita só `editor`**; **sem UPDATE/DELETE — correção por estorno** |
-| `lancamento_anexos` | lancamento_id, storage_path, sha256, tipo | — | `conselho` e `editor`; bucket separado |
-| `orcamento` | exercicio, conta_id, mes, valor_previsto | `unique(exercicio,conta_id,mes)` | leitura autenticados; escrita `editor` |
-| `fornecedores`, `contratos` | cnpj, razao_social; vigencia, valor_mensal, indice_reajuste, documento_id | — | leitura autenticados |
-| `cobrancas` | unidade_id, competencia, valor, vencimento, status, valor_pago | `(status, vencimento)` | **morador vê só a própria unidade**; `conselho` e `editor` veem todas |
-| `assembleias`, `deliberacoes` | data, tipo, ata_documento_id; item, resultado, votos, **chunk_id** | — | leitura autenticados |
+| `contas` | codigo, nome, natureza, nivel, conta_pai_id, aceita_lancamento, fundo, exige_deliberacao, codigo_administradora | árvore, `(codigo text_pattern_ops)` | leitura autenticados; escrita `editor` |
+| `fornecedores` | cnpj, `cpf_hash`, razao_social, `eh_sindico_terceirizado`, `eh_administradora` | `unique(cnpj)`, trigram(razao_social) | leitura autenticados (sem `cpf_enc`); escrita `editor` |
+| `fornecedor_dados_bancarios` | fornecedor_id, banco, agencia, conta_mascarada, `chave_pix_hash`, vigencia | `(fornecedor_id, vigente_ate)` | só `conselho` e `editor`. Existe para o alerta "troca de dados bancários"; nada em claro |
+| `contratos` | fornecedor_id, objeto, vigencia, `valor_mensal_centavos`, indice_reajuste, documento_id, deliberacao_id | `(vigencia_fim)` parcial | leitura autenticados |
+| `periodos_fechados` | competencia pk, fechado_por, saldo_inicial/final, reaberto_em, motivo_reabertura | pk | leitura autenticados; escrita `editor`. Trava o mês (§5.4) |
+| `lancamentos` | data_competencia, data_caixa, conta_id, fornecedor_id, historico, `valor_centavos`, tipo, fundo, **documento_id**, pagina_origem, origem, **deliberacao_id**, **estorna_lancamento_id**, motivo_estorno, criado_por | `(competencia, conta_id)`, `(conta_id, competencia)`, `(fornecedor_id)` | leitura autenticados; **escrita só `editor`**; **sem UPDATE/DELETE — correção por estorno** (§5.4) |
+| `lancamento_anexos` | lancamento_id, storage_path, sha256, tipo | `(lancamento_id)`, parcial `tipo='cotacao'` | `conselho` e `editor`; bucket separado |
+| `orcamento` | exercicio, conta_id, mes, `valor_previsto_centavos` | `unique(exercicio,conta_id,mes)` | leitura autenticados; escrita `editor` |
+| `cobrancas` | unidade_id, competencia, `valor_centavos`, vencimento, status, `valor_pago_centavos` | `(status, vencimento)`, `unique(unidade_id,competencia)` | **morador vê só a própria unidade**; `conselho` e `editor` veem todas |
+| `assembleias` | tipo, data, ata_documento_id, edital_documento_id, quorum_presente | `(data)` | leitura autenticados |
+| `deliberacoes` | assembleia_id, item, descricao, resultado, votos, `valor_autorizado_centavos`, **âncora de citação: documento_id + pagina + trecho_literal**, `chunk_id` (ponteiro fraco) | `unique(assembleia_id,item)` | espelha a visibilidade do documento citado |
 | `questionamentos` | lancamento_id, autor_id, texto, status, resposta, respondido_por, ts | `(status)` | `conselho` e `editor` |
-| `alertas` | tipo, severidade, lancamento_id/contrato_id, detalhe jsonb, status, ts | `(status, severidade)` | `conselho` e `editor` |
-| `audit.log` | ts, actor, acao, tabela, registro_id, antes jsonb, depois jsonb, ip, `hash_anterior`, `hash_registro` | — | schema `audit` **fora do PostgREST**; `REVOKE UPDATE, DELETE` inclusive para `service_role` |
+| `tipos_alerta` | codigo, nome, severidade_padrao, descricao_regra, `requer_historico_meses` | pk textual | leitura gestão; escrita `editor` |
+| `alertas` | tipo, severidade, lancamento_id/contrato_id/fornecedor_id, detalhe jsonb, status, `chave_dedupe unique`, ts | `(status, severidade)` | `conselho` e `editor` |
+| `pareceres`, `parecer_signatarios` | competencia, versao, texto, conclusao, status, signatários | `unique(competencia,versao)` | rascunho: gestão; emitido: autenticados. Única escrita do `conselho` |
+| `sinonimos` | termo, termo_normalizado, expansoes[] | `unique(termo_normalizado)` | leitura livre; escrita `editor` |
+| `configuracoes` | chave pk, valor jsonb, publica | pk | linha `publica`: autenticados; demais: gestão. **Limiar de alerta vive aqui, não em código** |
+| `job.fila` | tipo, payload, status, tentativas, disponivel_em, `chave_idempotencia unique` | parcial `status='pendente'` | schema `job` **fora do PostgREST**; só o worker |
+| `audit.log` | seq, ts, actor, acao, tabela, registro_id, antes jsonb, depois jsonb, ip, `hash_anterior`, `hash_registro` | `(tabela, registro_id)` | schema `audit` **fora do PostgREST**; append-only encadeado, **permanente**; `REVOKE UPDATE, DELETE` inclusive para `service_role`, mais trigger que bloqueia o dono da tabela |
+| `audit.acesso` | ts, actor, recurso, recurso_id, motivo, ip | `(recurso, ts)` | mesmo isolamento; **sem encadeamento, expurgável em 6 meses**. Separada de `audit.log` porque expurgo e cadeia de hash são incompatíveis (§7) |
 
 Orçado×realizado e posição de inadimplência são **views**, não tabelas materializadas.
 Não otimizar antes de doer.
 
+**Âncora de citação.** Chunk é derivado e regenerável: o pipeline é idempotente e reprocessar
+reescreve a segmentação (§3). Portanto nenhuma citação persistida é ancorada em `chunk_id`. A
+âncora estável é `(documento_id, pagina)` mais `trecho_literal` guardado como snapshot; `chunk_id`
+permanece como ponteiro fraco (`on delete set null`), reconstruível por busca do trecho. Vale para
+`deliberacoes` e para qualquer citação futura.
+
 ### 2.1 Papéis e autenticação
 
-Quatro papéis. O síndico é **terceirizado e não é usuário do sistema** — ele é a entidade
-fiscalizada, referenciada em dados (contratos, lançamentos, pareceres), sem conta e sem acesso.
+**Três papéis de usuário.** O síndico é **terceirizado e não é usuário do sistema** — ele é a
+entidade fiscalizada, referenciada em dados (contratos, lançamentos, pareceres), sem conta e sem
+acesso. `sindico_terceirizado` **não existe no enum `papel`**: valor de enum é convite a criar
+conta. Ele é o atributo `fornecedores.eh_sindico_terceirizado`.
 
 | Papel | Quem | Pode |
 |---|---|---|
-| `editor` | Hoje: só a dona do projeto. Depois: subsíndica. | Publicar documento, conferir e publicar balancete, orçamento, fornecedores, responder questionamento. Único papel com escrita. |
+| `editor` | Hoje: só a dona do projeto. Depois: subsíndica. | Publicar documento, conferir e publicar balancete, orçamento, fornecedores, responder questionamento. Único papel com escrita de lançamento. |
 | `conselho` | Conselho fiscal e subsíndica | Leitura completa do financeiro, incluindo anexos e inadimplência nominal. Abrir questionamento, emitir parecer. **Nenhuma escrita de lançamento.** |
 | `morador` | Proprietários e inquilinos | Acervo publicado, financeiro agregado, própria unidade. |
-| `sindico_terceirizado` | Administradora / síndico profissional | **Não é conta.** Existe só como referência em `fornecedores` e como sujeito dos alertas. |
+| *(não é papel)* | Administradora / síndico profissional | **Não é conta.** Existe só como referência em `fornecedores` e como sujeito dos alertas. |
 
 **Login por CPF ou e-mail — regra dura de implementação.** CPF não é secreto e é enumerável.
 Portanto: o CPF é *alias de identificação*, nunca credencial. O fluxo é sempre
@@ -79,6 +110,21 @@ existente e inexistente — sem isso, a tela vira oráculo de "esta pessoa mora 
 
 `cpf_hash` precisa ser determinístico (HMAC-SHA256 com pepper em variável de ambiente, fora do
 banco) para permitir o lookup; `cpf_enc` é a versão reversível, lida só pela `editor`.
+
+**Onde a cripto acontece — regra dura.** HMAC e cifra rodam **na aplicação**, nunca em função
+SQL: o banco recebe `bytea` pronto e nenhum segredo entra nele. Consequência direta: **não existe
+view que devolva CPF em claro** — com a chave fora do banco, nenhuma view consegue decifrar, e
+RLS não filtra coluna. O acesso ao CPF em claro é uma rotina de servidor que (a) confirma `editor`
+com AAL2, (b) decifra, (c) registra em `audit.acesso` com motivo. `cpf_enc` tem
+`REVOKE SELECT` para `authenticated`. Para o `conselho`, a exibição usa
+`cpf_ultimos_digitos` (`***.***.789-**`), que guarda os dígitos 7–9 e **jamais** os
+verificadores. Ver ADR-0014.
+
+**Nível de garantia entra na autorização, não só na tela.** TOTP obrigatório para `editor` e
+`conselho` significa que o helper de RLS só reconhece esses papéis quando o JWT traz `aal2`;
+sessão de membro do conselho em AAL1 é tratada como `morador`. E **papel é dado, não claim**:
+vive em `papeis` com mandato datado, não em `app_metadata` — mandato que termina hoje deixa de
+valer hoje, sem esperar a expiração do token. Ver ADR-0003 e ADR-0012.
 
 ---
 
@@ -146,7 +192,16 @@ comparabilidade.
 | Fracionamento suspeito | Múltiplos lançamentos, mesma conta e fornecedor, mesmo mês, somando acima do limiar de cotação | Alta |
 | Troca de dados bancários | Alteração de conta de fornecedor recorrente (golpe do boleto) | Crítica |
 
-Limiares vivem em tabela de configuração, não em código.
+Limiares vivem em tabela de configuração (`configuracoes`), não em código.
+
+**Alerta que depende de histórico.** "Variação atípica" pressupõe média móvel de 6 meses e
+"fracionamento suspeito" pressupõe base de comparação; num condomínio recém-entregue esse
+histórico não existe, e uma regra sem base produz falso positivo em série — que é como um painel
+de alertas perde a confiança do conselho e vira ruído ignorado. Cada regra declara em
+`tipos_alerta.requer_historico_meses` quanto de série precisa; o motor **não avalia** a regra
+enquanto o acervo não alcança esse mínimo, e a UI diz "aguardando histórico" em vez de silenciar.
+*Profundidade real do histórico deste condomínio: `[PENDENTE — decisão da dona do projeto]`,
+relacionada ao Briefing §7 item 4.*
 
 ### 5.4 Fiscalização e fluxo
 
@@ -154,6 +209,13 @@ Questionamento do conselho preso ao lançamento (aberto → respondido → resol
 notificação ao responsável. Parecer do conselho versionado por período, com signatários e
 anexos. Fechamento mensal trava o período; lançamento retroativo exige reabertura justificada
 e auditada. Correção **sempre por estorno**, nunca por edição.
+
+**Como o estorno é modelado.** O estorno é um lançamento comum na própria tabela `lancamentos`,
+com `estorna_lancamento_id` (self-FK, `unique`) e **valor negativo** exato do original, herdando
+conta, tipo e fundo — estorno não reclassifica. Assim `SUM(valor_centavos)` já sai correto sem
+cláusula especial, e nenhum relatório futuro erra por esquecer de filtrar estornado. Estorno de
+estorno é proibido; um lançamento é estornado no máximo uma vez; o motivo é obrigatório. O par
+original+estorno **aparece na UI** — a correção é mostrada, não escondida. Ver ADR-0011.
 
 ### 5.5 Relatórios
 
@@ -225,8 +287,9 @@ proveniência rastreável.**
 ### 6.6 Direção visual
 
 Institucional-sereno, não startup. Base neutra cinza-azulada quase papel; **um único azul
-profundo** como cor de ação, sem gradiente. Verde e vermelho reservados exclusivamente a status
-financeiro, nunca decorativos. Serifada ou humanista no corpo de texto jurídico, sans-serif
+profundo** como cor de ação, sem gradiente. Verde e vermelho **nunca decorativos** — só onde carregam
+significado: status financeiro, erro, confirmação. Cor como enfeite é proibida; cor como
+semântica é obrigatória e vem sempre acompanhada de texto, para quem não a distingue. Serifada ou humanista no corpo de texto jurídico, sans-serif
 neutra em UI e números. Ícones lineares, sem mascote. Hierarquia por peso tipográfico e espaço
 em branco, não por cor. A régua: deve parecer confiável como um extrato bancário.
 
@@ -237,11 +300,12 @@ em branco, não por cor. A régua: deve parecer confiável como um extrato banc�
 - **RLS negando por padrão** em todas as tabelas, com helper `papel_atual(uid)` lendo mandato vigente. Testes de policy (pgTAP) versionados e rodando no CI — regressão de RLS é vazamento.
 - **Armadilha nº1:** RLS em `documentos` sem RLS equivalente em `chunks` e `documento_paginas` vaza conteúdo restrito pela busca. Espelhar sempre.
 - **Anexos financeiros** em bucket próprio, acesso só por signed URL de TTL curto (60–300s) gerada no servidor após checagem de papel. Nunca embutida em página cacheada na CDN.
-- **Trilha imutável:** triggers `SECURITY DEFINER` gravam em `audit.log`; encadeamento `hash_registro = sha256(hash_anterior || linha canônica)`; âncora semanal do hash-topo enviada por e-mail ao conselho. Assim, adulteração por quem tem acesso ao banco — inclusive a `editor` — fica detectável. Isso é o que dá ao produto autoridade perante os moradores: nem quem opera o sistema pode reescrever o passado sem deixar rastro.
+- **Trilha imutável:** triggers `SECURITY DEFINER` gravam em `audit.log`; encadeamento `hash_registro = sha256(hash_anterior || linha canônica)`; âncora semanal do hash-topo enviada por e-mail ao conselho. Assim, adulteração por quem tem acesso ao banco — inclusive a `editor` — fica detectável. Isso é o que dá ao produto autoridade perante os moradores: nem quem opera o sistema pode reescrever o passado sem deixar rastro. Três exigências de implementação que não são detalhe: (a) o trigger toma `pg_advisory_xact_lock` **antes** de ler o último hash — sem isso, duas transações concorrentes leem o mesmo `hash_anterior` e a cadeia bifurca, falha que só aparece sob carga e destrói a garantia em silêncio; (b) a serialização canônica é parte do contrato e está fixada em `docs/schema.md` — mudá-la quebra a cadeia; (c) o trigger **redige** colunas sensíveis (`cpf_enc`) em `antes`/`depois`, senão a trilha vira uma segunda cópia irremovível de dado pessoal.
+- **Trilha ≠ log de acesso.** `audit.log` registra **mutação**: encadeado, append-only, permanente. `audit.acesso` registra **leitura de dado sensível** (CPF em claro, inadimplência nominal, anexo financeiro, export): sem encadeamento e expurgável em 6 meses. São duas tabelas porque retenção curta e cadeia de hash são incompatíveis — misturá-las obrigaria a escolher entre violar a retenção e quebrar a cadeia.
 - **Base legal LGPD:** obrigação legal e legítimo interesse (dever de prestar contas do síndico, **Código Civil art. 1.348, VIII** — confirmado em fonte primária), **não** consentimento. Minimização: CPF em claro visível apenas ao `editor`; para o `conselho`, sempre mascarado.
 - **Inadimplência nominal jamais é exposta a moradores.** Morador vê apenas a própria unidade.
 - **Visibilidade pública:** por padrão, apenas convenção e regimento (normativos e impessoais). Ata e balancete exigem autenticação — contêm nome, unidade e às vezes CPF. Se a decisão for publicar acervo aberto, é obrigatória etapa de redação/anonimização antes da publicação. *Ver decisão pendente nº1 no briefing.*
-- **Retenção:** piso legal de 5 anos vem da **Lei 4.591/64, art. 22, §1º, alínea "g"** — único piso explícito de guarda documental condominial, que sobreviveu à derrogação pelo Código Civil. Atas, convenção e laudos permanentes por **decisão de produto**, não por obrigação legal comprovada. Log de acesso 6 meses. Guarda de folha, ponto e registro de empregados: `[NÃO CONFIRMADO — verificar]`. Atenção: a Lei 8.212/91 art. 32, §11 **não diz mais "dez anos"** desde a Lei 11.941/2009 — hoje é "até que ocorra a prescrição"; quase toda fonte secundária de contabilidade ainda repete os 10 anos. Rotina de anonimização de ex-morador preserva agregados e apaga PII.
+- **Retenção:** piso legal de 5 anos vem da **Lei 4.591/64, art. 22, §1º, alínea "g"** — único piso explícito de guarda documental condominial, que sobreviveu à derrogação pelo Código Civil. Atas, convenção e laudos permanentes por **decisão de produto**, não por obrigação legal comprovada. Log de acesso (`audit.acesso`) 6 meses; `audit.log` é permanente e não é expurgável. Guarda de folha, ponto e registro de empregados: `[NÃO CONFIRMADO — verificar]`. Atenção: a Lei 8.212/91 art. 32, §11 **não diz mais "dez anos"** desde a Lei 11.941/2009 — hoje é "até que ocorra a prescrição"; quase toda fonte secundária de contabilidade ainda repete os 10 anos. Rotina de anonimização de ex-morador preserva agregados e apaga PII.
 - **Backup:** backup do provedor não é backup. `pg_dump` semanal + espelho do Storage em conta separada, com restore testado trimestralmente.
 
 ---

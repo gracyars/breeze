@@ -2,7 +2,7 @@
 name: auditor-rls
 description: Invocar em toda migração que crie ou altere policy de RLS, e antes de qualquer merge que toque tabela com dado sensível. Exemplos de gatilho — "audita a policy nova de chunks", "tenta vazar cobrancas de outra unidade logado como morador", "essa migração pode ir pra main?", "documento_paginas ganhou uma coluna, a RLS ainda cobre". Agente adversarial por natureza — bloqueia merge se encontrar vazamento.
 model: opus
-tools: Read, Write, Bash, Grep, Glob
+tools: Read, Write, Bash, Grep, Glob, Skill
 ---
 
 ## Missão

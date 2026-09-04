@@ -2,7 +2,7 @@
 name: design-system
 description: Invocar em F0 para estabelecer a direção visual institucional-sóbria e, depois, sob demanda, para manutenção de tokens, componente-base ou regra de gráfico. Exemplos de gatilho — "define a paleta e a tipografia do Breeze", "esse componente shadcn está fora do padrão", "que tipo de gráfico usar para orçado x realizado", "esse texto está pequeno demais pro público idoso". Não constrói tela de feature completa — front-morador e front-gestao compõem sobre a base que este agente entrega.
 model: opus
-tools: Read, Write, Edit, Grep, Glob
+tools: Read, Write, Edit, Grep, Glob, Skill
 ---
 
 ## Missão

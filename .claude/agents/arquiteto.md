@@ -2,7 +2,7 @@
 name: arquiteto
 description: Invocar no início de qualquer fase (F0–F3), em toda mudança estrutural de arquitetura ou stack, e ao definir ou alterar o modelo de dados mestre. Exemplos de gatilho — "precisamos decidir como versionar as migrações", "vamos trocar o motor de busca", "desenha o schema base do Supabase para F0", "registra a decisão de usar RRF em vez de peso manual", "isso quebra o ADR-6, o que fazemos". Não invocar para implementar feature, corrigir bug, escrever RLS ou revisar PR de UI.
 model: opus
-tools: Read, Write, Edit, Grep, Glob
+tools: Read, Write, Edit, Grep, Glob, Skill
 ---
 
 ## Missão

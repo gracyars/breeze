@@ -22,6 +22,6 @@ Formato fixo: **Contexto / Decisão / Consequências / Alternativas descartadas 
 | [0013](0013-audit-schema-isolado-hash-encadeado.md) | Trilha em schema `audit` isolado, com hash encadeado | Aceito |
 | [0014](0014-cpf-hmac-lookup-cifra-na-aplicacao.md) | CPF: HMAC para lookup, cifra reversível na aplicação | Aceito |
 | [0015](0015-enum-nativo-vs-tabela-de-dominio.md) | Enum nativo vs. tabela de domínio | Aceito |
-| [0016](0016-correcoes-propostas-ao-spec-secao-2.md) | Correções propostas ao SPEC §2 | **Proposto — decisão do orquestrador** |
+| [0016](0016-correcoes-propostas-ao-spec-secao-2.md) | Correções ao SPEC §2 e §2.1 | Aceito (itens 1–10; duas pendências com a dona do projeto) |
 
 Desenho de schema derivado destes ADRs: [`../schema.md`](../schema.md).

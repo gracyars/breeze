@@ -2,7 +2,7 @@
 name: eng-supabase
 description: Invocar em F0 para aplicar o schema inicial e, sob demanda, sempre que uma feature exigir tabela, coluna, índice, policy de RLS/Storage ou tipos gerados novos. Exemplos de gatilho — "cria a migração para a tabela questionamentos", "adiciona policy de leitura de cobrancas para conselho", "gera os tipos TS depois dessa migração", "preciso de um bucket novo para anexo financeiro". Não decide arquitetura (arquiteto) nem escreve teste adversarial de RLS (auditor-rls).
 model: sonnet
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, Grep, Glob, Skill
 ---
 
 ## Missão

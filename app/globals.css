@@ -1,26 +1,238 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* =============================================================================
+   Breeze — Design tokens (F0)
+   Direção: SPEC §6.6 institucional-sereno. Base neutra cinza-azulada quase papel,
+   UM único azul profundo como cor de ação, sem gradiente. Verde e vermelho
+   exclusivamente para status financeiro (§6.6). Hierarquia por peso e espaço,
+   nunca por cor.
+   Acessibilidade: SPEC §6.5 — corpo 18px, mínimo absoluto 16px, AA em tudo,
+   AAA em texto financeiro, alvo de toque ≥48px, escala a 200% sem quebra.
+   Todos os contrastes estão medidos em docs/design-system.md e verificados em
+   tests/unit/contraste-tokens.test.ts.
+   ========================================================================== */
+
+@theme {
+  /* --- Tipografia: famílias ------------------------------------------------
+     Serifada humanista (Source Serif 4) só no corpo de texto jurídico — leitura
+     longa de convenção e regimento. Sans neutra (IBM Plex Sans) em toda a UI e
+     em todo número. Ver docs/design-system.md §Tipografia. */
+  --font-sans:
+    var(--fonte-ui), "IBM Plex Sans", "Segoe UI", system-ui, -apple-system,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-serif:
+    var(--fonte-legal), "Source Serif 4", "Source Serif Pro", Charter, Georgia,
+    "Times New Roman", serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+
+  /* --- Tipografia: escala --------------------------------------------------
+     Nenhum token abaixo de 1rem (16px). text-xs e text-sm são REMOVIDOS de
+     propósito: se um agente escrever `text-sm`, a classe não existe e o desvio
+     aparece na tela em vez de passar na revisão. */
+  --text-xs: initial;
+  --text-xs--line-height: initial;
+  --text-sm: initial;
+  --text-sm--line-height: initial;
+
+  --text-meta: 1rem; /* 16px — piso absoluto: rótulo, badge, legenda */
+  --text-meta--line-height: 1.5;
+  --text-base: 1.125rem; /* 18px — corpo padrão da UI (alvo do SPEC §6.5) */
+  --text-base--line-height: 1.6;
+  --text-lg: 1.25rem; /* 20px */
+  --text-lg--line-height: 1.55;
+  --text-legal: 1.25rem; /* 20px — corpo jurídico serifado */
+  --text-legal--line-height: 1.75;
+  --text-xl: 1.5rem; /* 24px */
+  --text-xl--line-height: 1.35;
+  --text-2xl: 1.875rem; /* 30px */
+  --text-2xl--line-height: 1.25;
+  --text-3xl: 2.25rem; /* 36px */
+  --text-3xl--line-height: 1.2;
+  --text-4xl: 3rem; /* 48px — número único do mês (SPEC §6.4 camada 1) */
+  --text-4xl--line-height: 1.1;
+  --text-5xl: initial;
+  --text-6xl: initial;
+  --text-7xl: initial;
+  --text-8xl: initial;
+  --text-9xl: initial;
+
+  /* --- Cor: base neutra cinza-azulada ------------------------------------- */
+  --color-papel: #f7f8fa; /* fundo da página */
+  --color-superficie: #ffffff; /* card, tabela, campo */
+  --color-superficie-alt: #f2f5f8; /* zebra de tabela, cabeçalho */
+  --color-superficie-muda: #eef1f5; /* estado desabilitado, bloco secundário */
+
+  --color-tinta: #16202c; /* texto principal — 15.5:1 no papel */
+  --color-tinta-suave: #445260; /* texto secundário — 7.5:1 no papel (AAA) */
+  --color-tinta-fraca: #5a6a78; /* meta, placeholder — 5.2:1 (AA) */
+
+  --color-borda: #c6ceda; /* hairline decorativa */
+  --color-borda-forte: #7d8b99; /* obrigatória em campo, tabela e limite que informa (3.3:1) */
+
+  /* --- Cor: ação. UM azul profundo, sem gradiente ------------------------- */
+  --color-acao: #14417a; /* 9.6:1 no papel, 10.2:1 com texto branco */
+  --color-acao-forte: #0e3160; /* hover */
+  --color-acao-ativa: #0a2549; /* pressed */
+  --color-acao-suave: #e7edf6; /* fundo de seleção/realce */
+  --color-foco: #14417a;
+  --color-foco-inverso: #ffffff; /* anel sobre superfície escura */
+
+  /* --- Cor: verde e vermelho. Só onde carregam SIGNIFICADO (SPEC §6.6) -----
+     Status financeiro, erro e confirmação. Nunca enfeite: nada de badge "novo"
+     verde, ícone decorativo vermelho ou faixa colorida sem semântica. */
+  --color-positivo: #0c4e2f; /* 9.2:1 no papel, 8.9:1 sobre o próprio tinte */
+  --color-positivo-suave: #edf6f1;
+  --color-negativo: #8e1c24; /* 8.4:1 no papel, 7.9:1 sobre o tinte */
+  --color-negativo-suave: #fbeeee;
+  --color-atencao: #6b4700; /* 7.8:1 — severidade de alerta */
+  --color-atencao-suave: #fbf1e0;
+
+  /* Erro de formulário. Mesmo vermelho do status negativo, de propósito: é a
+     convenção universal e o público não perdoa quebra de convenção. Token
+     separado porque o significado é outro e pode divergir sem contaminar o
+     financeiro. Teste garante que os dois hex continuem iguais até alguém
+     decidir o contrário. */
+  --color-erro: #8e1c24;
+  --color-erro-suave: #fbeeee;
+
+  /* --- Cor: gráfico (regras em docs/design/graficos.md) ------------------- */
+  --color-grafico-realizado: #14417a; /* série principal = azul de ação */
+  --color-grafico-orcado: #9aa9b8; /* série de referência, sempre com contorno */
+  --color-grafico-contorno: #5a6a78; /* contorno de 1px em barra clara (≥3:1) */
+  --color-grafico-eixo: #7d8b99;
+
+  /* --- Espaçamento --------------------------------------------------------
+     Base 4px do Tailwind mantida. `toque` é o piso de alvo clicável do SPEC. */
+  --spacing-toque: 3rem; /* 48px — min-h-toque / min-w-toque */
+  --spacing-toque-confortavel: 3.5rem; /* 56px — CTA principal no celular */
+  --spacing-leitura: 68ch; /* max-w-leitura — medida de linha do texto jurídico */
+
+  /* --- Raio: sóbrio, quase reto ------------------------------------------- */
+  --radius-sm: 0.25rem; /* 4px */
+  --radius-md: 0.375rem; /* 6px — botão, campo */
+  --radius-lg: 0.625rem; /* 10px — card */
+  --radius-xl: 0.75rem;
+
+  /* --- Sombra: mínima. O limite vem da borda, não da sombra --------------- */
+  --shadow-sm: 0 1px 2px 0 rgb(22 32 44 / 0.06);
+  --shadow-md: 0 2px 6px -1px rgb(22 32 44 / 0.08);
+  --shadow-lg: 0 8px 24px -4px rgb(22 32 44 / 0.12);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+/* =============================================================================
+   Base
+   ========================================================================== */
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  html {
+    /* Nunca fixar px aqui: a escala do navegador do morador idoso precisa valer. */
+    font-size: 100%;
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-papel);
+    color: var(--color-tinta);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    /* Herdado por tudo: em 320px com fonte a 200%, palavra longa (nome de
+       fornecedor, "proveniência", valor de 6 dígitos) quebra em vez de gerar
+       rolagem horizontal na página. É o que sustenta WCAG 1.4.4 + 1.4.10. */
+    overflow-wrap: break-word;
+  }
+
+  /* Foco sempre visível e espesso: 3px + deslocamento. Nunca remover. */
+  :focus-visible {
+    outline: 3px solid var(--color-foco);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  ::selection {
+    background-color: var(--color-acao-suave);
+    color: var(--color-tinta);
+  }
+
+  /* Link nunca se distingue só por cor (SPEC §6.5 / WCAG 1.4.1). */
+  a {
+    color: var(--color-acao);
+    text-decoration-line: underline;
+    text-decoration-thickness: from-font;
+    text-underline-offset: 0.2em;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* =============================================================================
+   Utilitários do sistema
+   ========================================================================== */
+
+/* Todo número em contexto financeiro usa isto: algarismo tabular e alinhado.
+   Coluna de valor sem tabular-nums não alinha e o conselho perde a leitura. */
+@utility numero {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1, "zero" 0;
+  letter-spacing: 0;
+}
+
+/* Corpo de texto jurídico: serifada, 20px, entrelinha 1.75, medida controlada. */
+@utility texto-legal {
+  font-family: var(--font-serif);
+  font-size: var(--text-legal);
+  line-height: var(--text-legal--line-height);
+  max-width: var(--spacing-leitura);
+}
+
+/* Piso de alvo de toque: 48px. Aplicar em qualquer coisa clicável. */
+@utility alvo-toque {
+  min-height: var(--spacing-toque);
+  min-width: var(--spacing-toque);
+}
+
+/* Alvo confortável: 56px. CTA principal no celular. */
+@utility alvo-toque-lg {
+  min-height: var(--spacing-toque-confortavel);
+  min-width: var(--spacing-toque-confortavel);
+}
+
+/* Medida de linha do texto longo. */
+@utility medida-leitura {
+  max-width: var(--spacing-leitura);
+}
+
+/* Conteúdo visível só para leitor de tela. */
+@utility apenas-leitor {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border-width: 0;
 }

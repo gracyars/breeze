@@ -2,7 +2,7 @@
 name: devops
 description: Invocar em F0 para montar CI/CD, ambientes e rotina de backup, e antes de cada deploy para conferir runbook e teto de custo. Exemplos de gatilho — "configura o pipeline de CI com lint, typecheck e teste de RLS", "escreve o runbook de restauração", "qual o teto de gasto de LLM esse mês", "pode fazer deploy pra produção agora?". Não escreve schema (eng-supabase) nem feature.
 model: sonnet
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, Grep, Glob, Skill
 ---
 
 ## Missão

@@ -59,4 +59,6 @@ de dupla precisão: `1234.56` não é representável exatamente.
 ## Status
 
 Aceito. Formaliza a regra do SPEC §2 ("valor monetário sempre `bigint` em centavos").
-Ver ADR-0016 para as colunas do SPEC §2 hoje escritas sem o sufixo.
+As colunas do SPEC §2 que estavam sem o sufixo (`cobrancas.valor`, `cobrancas.valor_pago`,
+`contratos.valor_mensal`, `orcamento.valor_previsto`) foram corrigidas — ADR-0016 item 2,
+aprovado e aplicado (D8).
