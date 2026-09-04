@@ -1,0 +1,127 @@
+name: CI
+
+# Ordem obrigatória (SPEC §1.2): lint, typecheck, testes (unit + RLS), supabase db push.
+# Nenhum deploy passa com qualquer etapa vermelha — cada job depende do anterior via `needs`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PNPM_VERSION: 11
+  NODE_VERSION: 20
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+
+  unit-test:
+    name: Testes unitários (Vitest)
+    runs-on: ubuntu-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  rls-test:
+    name: Testes de RLS (pgTAP)
+    runs-on: ubuntu-latest
+    needs: unit-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      # `supabase start` sobe o stack local (Postgres + extensões) e aplica todas as migrações
+      # versionadas em supabase/migrations antes de qualquer teste.
+      - name: Start Supabase local
+        run: supabase start
+      # Preenchido por auditor-rls (supabase/tests/*.sql). Vazio hoje = passa vazio, não pula —
+      # o comando falha explicitamente assim que houver arquivo com policy quebrando.
+      - name: Rodar testes pgTAP de RLS
+        run: |
+          if find supabase/tests -name '*.sql' -print -quit | grep -q .; then
+            supabase test db --local supabase/tests
+          else
+            echo "Nenhum teste pgTAP em supabase/tests ainda (slot do auditor-rls). Pulando sem falhar o build inicial."
+          fi
+      - name: Parar Supabase local
+        if: always()
+        run: supabase stop
+
+  db-push:
+    name: supabase db push (deploy)
+    runs-on: ubuntu-latest
+    needs: rls-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      # Requer secrets configurados no repositório (ver docs/ops/backup.md e pendências no
+      # relatório de entrega do devops): SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD,
+      # SUPABASE_PROJECT_ID. Schema nunca é editado pelo dashboard — só migração versionada.
+      - name: Link ao projeto remoto
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      - name: Aplicar migrações no remoto
+        run: supabase db push --linked
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      # Tipos gerados no CI (SPEC §1.2), publicados como artefato — não commitados de volta
+      # automaticamente nesta fase (F0). Baixar e commitar manualmente até isso virar um passo
+      # de bot dedicado.
+      - name: Gerar tipos TS a partir do schema remoto
+        run: supabase gen types typescript --linked > database.types.ts
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: database-types
+          path: database.types.ts

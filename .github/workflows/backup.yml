@@ -1,0 +1,50 @@
+name: Backup semanal
+
+# Regra dura (SPEC §7): snapshot automático do provedor NÃO conta como backup. Este workflow
+# roda o pg_dump + espelho de Storage próprios (scripts/backup.sh) toda semana, para uma conta
+# de backup separada, em provedor diferente do de produção.
+#
+# Pendente de configuração humana antes de ativar (ver relatório de entrega do devops):
+# secrets SUPABASE_DB_URL, BACKUP_STORAGE_BUCKET, BACKUP_ENCRYPTION_KEY, BACKUP_RCLONE_CONFIG
+# (arquivo `rclone.conf` em base64, gerado uma vez localmente com `rclone config`).
+on:
+  schedule:
+    # Toda segunda-feira às 06:00 UTC (03:00 America/Sao_Paulo).
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    name: pg_dump + espelho de Storage
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar pg_dump 17 e rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17 gnupg
+          curl https://rclone.org/install.sh | sudo bash
+
+      - name: Configurar rclone a partir do secret
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.BACKUP_RCLONE_CONFIG }}" | base64 --decode > ~/.config/rclone/rclone.conf
+
+      - name: Rodar backup
+        run: ./scripts/backup.sh
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_STORAGE_BUCKET: ${{ secrets.BACKUP_STORAGE_BUCKET }}
+          BACKUP_STORAGE_PROVIDER: ${{ secrets.BACKUP_STORAGE_PROVIDER }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+          BACKUP_RCLONE_REMOTE: ${{ vars.BACKUP_RCLONE_REMOTE || 'breeze-backup' }}
+          BACKUP_SUPABASE_STORAGE_REMOTE: ${{ vars.BACKUP_SUPABASE_STORAGE_REMOTE || 'breeze-prod-storage' }}
+
+      - name: Alertar em caso de falha
+        if: failure()
+        run: |
+          echo "::error::Backup semanal falhou — escalar imediatamente (ver docs/ops/backup.md)."
+          # Substituir por chamada real ao webhook de alerta quando configurado
+          # (mesmo mecanismo do teto de custo de LLM, ver docs/ops/backup.md).
