@@ -79,4 +79,9 @@ do projeto** (SPEC §7, §8.1): RLS em `documentos` sem RLS equivalente em `chun
 
 ## Status
 
-Aceito.
+Aceito. **Estendido pelo ADR-0018** (visibilidade por página em documento de conteúdo misto):
+o item 3 acima pressupunha que visibilidade é propriedade do documento, o que o acervo real
+desmentiu. A regra de "uma função só" permanece — o núcleo do mapeamento nível → papel continua
+em `app.nivel_visivel`; mudou o que as funções de entrada recebem. O item 7 (exclusão de coluna)
+é corrigido no mecanismo pelo **ADR-0017**: `REVOKE` de coluna não subtrai de `GRANT` de tabela;
+usa-se `GRANT SELECT` com lista explícita de colunas.

@@ -34,7 +34,9 @@ Regras duras:
    `***.***.789-**` a partir de `cpf_ultimos_digitos`. `cpf_ultimos_digitos` guarda os dígitos
    7–9 (os anteriores ao verificador) e **jamais** os dígitos verificadores — deles se deriva
    material suficiente para reduzir busca.
-4. **`REVOKE SELECT (cpf_enc) ON pessoas FROM authenticated`** (ADR-0012, item 7). A decifra
+4. **`cpf_enc` fora do `GRANT SELECT` de `pessoas`** — concedido coluna a coluna, com lista
+   explícita (ADR-0012 item 7, **mecanismo corrigido pelo ADR-0017**: `REVOKE` de coluna não
+   subtrai de `GRANT` de tabela e não bloqueava nada). A decifra
    acontece em rotina de servidor que (a) confirma `editor` com AAL2, (b) registra em
    `audit.acesso` com motivo, (c) devolve o valor sem cachear. Ver CPF é evento auditado, não
    consulta.

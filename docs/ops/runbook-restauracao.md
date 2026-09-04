@@ -155,6 +155,13 @@ para o próximo item do backlog.
 
 ## 5. Recuperação de acesso da `editor` única — código impresso (D9)
 
+**Status: resolvido em 2026-09-04.** O mecanismo de remoção de fator MFA (§5.3) foi confirmado
+por `eng-supabase` contra fonte primária — pacote `@supabase/auth-js@2.115.0` (npm) e
+código-fonte do GoTrue na tag `v2.192.0`, a mesma versão embarcada no Supabase CLI 2.109.1
+desta máquina (conferido via `strings` do binário). A rota REST usada abaixo existe e é
+suportada nessa versão. Falta só o primeiro teste trimestral real (§5.5) — até essa linha ganhar
+entrada na tabela da seção 4, o mecanismo está confirmado por leitura de fonte, não por execução.
+
 Decisão travada em `docs/04-DECISOES.md` (D9) e prevista em
 `docs/adr/0003-auth-magic-link-cpf-alias-totp.md`: a `editor` é única (D4), TOTP é obrigatório
 para `editor`/`conselho` (AAL2, ADR-0003/0012), e **não existe um segundo `editor` para
@@ -208,43 +215,114 @@ Produz algo como `01  3F9A-2C11`. Cada linha é um código.
 5. Riscar fisicamente cada código assim que usado (uso único) e marcar o hash correspondente
    como consumido no registro de hashes.
 
-### 5.2 Redenção — como um código volta a dar acesso
+### 5.2 Onde vive a `service_role` key — e por que isso decide se a recuperação funciona
 
-Um código de recuperação não é uma segunda senha que o próprio sistema valida automaticamente
-numa tela — o Breeze não tem tela de "usar código de recuperação" no fluxo de login (isso seria
-mais uma feature de auth para especificar e testar, fora do escopo deste agente). O código é a
-**prova de posse fora de banda** que autoriza uma ação administrativa:
+O procedimento de §5.3 exige a chave `service_role` do projeto Supabase. Ela **não é** uma
+credencial do Breeze-produto — não é a conta `editor`, não passa pelo TOTP que foi perdido. É a
+chave-mestra do **projeto Supabase em si**, ligada à conta Supabase (supabase.com) que é dona do
+projeto. Essa separação é o que torna a recuperação possível: perder o fator TOTP de `editor`
+dentro do produto não toca a conta Supabase que administra o projeto.
 
-1. A editora, sem TOTP disponível, contata o suporte técnico/dona do projeto por um canal já
-   conhecido (telefone, não e-mail — e-mail sozinho não prova identidade aqui).
-2. Ela informa um dos códigos impressos, número da linha incluído.
-3. Quem atende confere o hash do código informado contra o registro (§5.1, item 2). Bate →
-   prossegue. Não bate → não prossegue, é um possível golpe de engenharia social.
-4. Com a identidade confirmada, quem tem acesso ao projeto Supabase (hoje: a própria dona do
-   projeto, via `SUPABASE_SERVICE_ROLE_KEY` ou dashboard) **remove o fator MFA/TOTP atual** da
-   conta da `editor` no Supabase Auth (Dashboard → Authentication → Users → fator MFA da conta,
-   ou API Admin `auth.admin.mfa.deleteFactor`/endpoint equivalente — **confirmar o nome exato do
-   método contra a versão da API em uso no momento da execução real; não copiar cego de uma
-   versão antiga da doc**).
-5. A editora entra de novo por magic link (AAL1) e **reenrola um novo TOTP** na hora — sem isso
-   ela segue tratada como `morador` pelo helper de autorização (ADR-0003/0012), sem escrita.
-6. O código usado é riscado e marcado consumido (§5.1, item 5). Se restarem poucos códigos
-   (regra prática: menos de 3), gerar um lote novo de 10 e repetir a cerimônia de guarda.
+Hoje (D4 — editora única, e é ela também a titular da conta Supabase do projeto), a chave é
+alcançável em dois lugares:
 
-**Dependência técnica em aberto:** os passos 4–5 usam capacidade administrativa do Supabase Auth
-que existe hoje via dashboard/API, mas o Breeze ainda não tem um procedimento **testado** ponta a
-ponta nem um script de apoio para isso. Antes do primeiro teste trimestral real, `eng-supabase`
-precisa confirmar (ou implementar, se faltar) o comando exato de remoção de fator MFA por
-`service_role` e validar que o reenrollment funciona sem intervenção manual no banco. Até essa
-confirmação, o item 4 deste procedimento é a maior incerteza do runbook — reportar ao
-orquestrador se o primeiro teste trimestral esbarrar nisso.
+1. **Dashboard Supabase** (supabase.com → login → projeto Breeze → Project Settings → API →
+   campo "service_role"). Sempre disponível sob demanda, sem precisar estar guardada em lugar
+   nenhum — é o caminho real para a editora executar isto sozinha.
+2. **Secrets do GitHub Actions** (`SUPABASE_SERVICE_ROLE_KEY`, usada por `db-push` e pelo backup
+   semanal). Alcançável só por quem tem acesso de admin ao repositório GitHub — é o caminho da
+   automação, não deste runbook.
 
-### 5.3 Teste trimestral do código de recuperação
+> **Regra dura, escrita porque é fácil de violar sem perceber:** o login da conta Supabase
+> (e-mail + senha + segundo fator da própria Supabase, se houver) e o acesso à caixa de e-mail
+> associada **não podem depender só do mesmo celular** que guarda o autenticador TOTP do Breeze.
+> Se a senha da conta Supabase só existe no gerenciador de senha *daquele* celular, e o e-mail de
+> recuperação também só abre *naquele* celular, a chave existe mas está tão inacessível quanto o
+> TOTP perdido — a recuperação não recupera nada, ela só parece existir no papel.
+> **Prática exigida:** login e senha da conta Supabase (e do e-mail dela) guardados com acesso
+> multi-dispositivo e recuperação própria e independente — mesmo padrão de "fora do mesmo lugar"
+> que vale para o papel dos códigos (§5.1, item 4). Confirmar isso é parte do primeiro teste
+> trimestral (§5.5, passo 0).
+
+### 5.3 Redenção — passo a passo, para ler em pânico, com o papel na mão
+
+Só existe uma editora; é ela quem executa isto para si mesma. Texto pensado para esse cenário —
+sem acesso ao sistema, talvez sem lembrar os termos técnicos, com o papel impresso na mão.
+
+**Antes de começar, confirme que você tem:** (1) um dos códigos impressos deste papel; (2) um
+computador ou celular emprestado com internet; (3) a senha da sua conta Supabase — se você não
+lembra, use a recuperação de senha da Supabase pelo seu e-mail (ver aviso em §5.2: isso só
+funciona se e-mail e senha não dependerem do aparelho que você perdeu).
+
+1. **Entre em supabase.com** com a conta que é dona do projeto Breeze.
+2. **Vá em Project Settings → API.** Copie dois valores: a "Project URL" e a chave
+   "service_role" (não é a "anon" — é a que tem aviso de secreta).
+3. **Vá em Authentication → Users**, ache sua conta de `editor` pelo e-mail, copie o **User UID**
+   mostrado ali.
+4. **Abra um terminal** (num Mac: app "Terminal"; num PC: "Prompt de Comando" ou "PowerShell") e
+   cole, substituindo os três valores dos passos 2 e 3:
+
+   ```bash
+   export SUPABASE_URL="https://<project-ref>.supabase.co"
+   export SUPABASE_SERVICE_ROLE_KEY="<colada do passo 2>"
+   export USER_ID="<colado do passo 3>"
+
+   # Lista os fatores MFA da conta — o objetivo é achar o "id" do fator TOTP perdido
+   curl -s -X GET "$SUPABASE_URL/auth/v1/admin/users/$USER_ID/factors" \
+     -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+     -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+   ```
+
+5. A resposta é uma lista. Ache o fator com `"factor_type":"totp"` e copie o valor de `"id"` —
+   esse é o `FACTOR_ID`.
+6. **Remova o fator TOTP perdido:**
+
+   ```bash
+   export FACTOR_ID="<id copiado do passo 5>"
+
+   curl -s -X DELETE "$SUPABASE_URL/auth/v1/admin/users/$USER_ID/factors/$FACTOR_ID" \
+     -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+     -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+   ```
+
+   Resposta vazia com sucesso é normal. Depois disso, a conta não pede mais o TOTP antigo.
+7. **Feche o terminal e limpe o histórico do comando** (`history -c` ou fechar a janela sem
+   salvar sessão) — a `service_role` key ficou digitada ali, e ela ignora toda regra de RLS do
+   banco inteiro (SPEC §7). Não cole essa chave em chat, ticket, e-mail ou qualquer lugar que
+   fique gravado.
+8. **Entre no Breeze normalmente** (CPF ou e-mail → link mágico no seu e-mail).
+9. Na tela de segurança da conta, **cadastre um TOTP novo** (novo app autenticador, ou o mesmo
+   app com uma entrada nova). Sem este passo você continua sem escrita — o sistema trata
+   `editor`/`conselho` sem AAL2 como `morador` (ADR-0003/0012).
+10. **Risque o código usado** no papel e marque o hash correspondente como consumido no registro
+    (§5.1, item 2). Se sobrarem menos de 3 códigos, gere um lote novo de 10 (§5.1) e repita a
+    cerimônia de guarda fora de casa.
+
+**Por que rota REST e não o método do SDK.** O cliente JS oficial tem um atalho,
+`supabaseAdmin.auth.admin.mfa.deleteFactor({ id, userId })`, mas ele está marcado `@experimental`
+na versão atual do `@supabase/auth-js` (2.115.0) — assinatura pode mudar sem aviso entre versões
+menores. A rota REST acima é o contrato do próprio servidor GoTrue (confirmado na tag `v2.192.0`,
+a mesma embarcada no Supabase CLI 2.109.1 desta máquina) e é o lado mais estável dos dois. Não
+trocar por conveniência sem reconferir contra a versão do GoTrue em uso no momento.
+
+### 5.4 Alternativa sem terminal (se o passo 4 travar)
+
+Se a editora não conseguir usar terminal, o mesmo resultado do passo 6 costuma existir dentro do
+Dashboard: Authentication → Users → conta da editora → seção de fatores MFA → remover o fator
+TOTP pela interface. **Confirmar essa opção na tela real no primeiro teste trimestral** (a
+interface do Dashboard muda entre versões do Supabase e não foi conferida contra fonte primária
+como a rota REST foi) — até lá, tratar como caminho não confirmado, e o `curl` como o caminho
+garantido.
+
+### 5.5 Teste trimestral do código de recuperação
 
 No mesmo ciclo do teste de restore (seção 3), sem esperar um incidente real:
 
+0. Antes do teste técnico: confirmar que a senha da conta Supabase e o acesso ao e-mail dela não
+   dependem só do celular do dia a dia (§5.2). Se dependerem, isso **é** uma falha do teste —
+   corrigir o armazenamento antes de considerar o item resolvido.
 1. Escolher **um** código impresso (não gastar mais de um por teste).
-2. Rodar o procedimento de redenção completo (§5.2) **num ambiente de teste** — nunca revogar o
+2. Rodar o procedimento de redenção completo (§5.3) **num ambiente de teste** — nunca revogar o
    TOTP da conta de produção da editora só para testar; usar uma conta `editor` de teste com o
    mesmo mecanismo, ou coordenar a janela com a dona do projeto se o teste tiver que ser na conta
    real.
@@ -252,5 +330,6 @@ No mesmo ciclo do teste de restore (seção 3), sem esperar um incidente real:
    permissão) só depois do reenrollment — prova de que o caminho de escrita realmente dependia
    do TOTP e foi restabelecido, não que "parecia" ter funcionado.
 4. Registrar o resultado na tabela da seção 4 (coluna "Código de recuperação testado").
-5. Se o teste falhar (código não bate, remoção de fator não funciona, reenrollment trava): é
-   crítico, mesma regra da seção 1 — escalar imediatamente à dona do projeto.
+5. Se o teste falhar (código não bate, remoção de fator não funciona, reenrollment trava, ou o
+   item 0 acima expõe a chave como inacessível): é crítico, mesma regra da seção 1 — escalar
+   imediatamente à dona do projeto.

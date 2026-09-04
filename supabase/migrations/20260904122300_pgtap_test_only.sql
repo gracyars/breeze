@@ -1,0 +1,19 @@
+-- Breeze — pgtap: SOMENTE local e CI, NUNCA produção (docs/schema.md §1: "Fica em migração
+-- separada... Não entra na baseline [de produção]").
+--
+-- Está aqui, em arquivo próprio e claramente sinalizado pelo nome (_test_only), porque:
+--   1. supabase/tests/README.md (devops) documenta que o `auditor-rls` depende de pgtap
+--      instalado ANTES de `supabase test db` rodar, e que o CI sobe stack local via
+--      `supabase start` (que aplica TODAS as migrações de supabase/migrations) antes do teste.
+--   2. `supabase db push` (o único comando autorizado a tocar staging/produção, ADR-0008 — nunca
+--      dashboard, sempre via CI) NÃO deve aplicar este arquivo a um projeto remoto de produção.
+--
+-- AÇÃO PENDENTE, fora do escopo deste agente (pipeline de CI/deploy é do `devops`): o passo de
+-- deploy remoto precisa EXCLUIR explicitamente arquivos terminados em `_test_only.sql` antes de
+-- rodar `supabase db push` contra staging/produção — por exemplo, copiando
+-- supabase/migrations/*.sql para um diretório temporário sem este arquivo, ou usando
+-- `supabase db push --dry-run` como portão de revisão que bloqueia se este arquivo aparecer no
+-- diff de um ambiente de produção. Sem esse filtro no pipeline, pgtap (extensão de teste, com
+-- funções de assert que não fazem sentido fora de CI) acaba instalada em produção — inofensiva
+-- por si só, mas contraria a instrução explícita do desenho.
+create extension if not exists pgtap with schema extensions;

@@ -218,30 +218,73 @@ returns setof uuid language sql stable security definer set search_path = '' as 
 $$;
 
 -- ****************************************************************************
--- FUNÇÃO CRÍTICA — ARMADILHA Nº 1 DO PROJETO (SPEC §7, §8.1).
--- Regra de visibilidade de documento em UM lugar só. As policies de documentos,
--- documento_paginas, chunks, deliberacoes e storage.objects CHAMAM ESTA FUNÇÃO.
--- Nenhuma delas reescreve o predicado. Predicado copiado diverge, e diverge calado.
+-- FUNÇÕES CRÍTICAS — ARMADILHA Nº 1 DO PROJETO (SPEC §7, §8.1).
+-- Regra de visibilidade em UM lugar só — em DUAS CAMADAS desde a correção de 2026-09-04
+-- (ADR-0018, D11), porque um PDF pode conter mais de um nível de exposição:
+--
+--   app.nivel_visivel(nivel, documento_id)   NÚCLEO ÚNICO do mapeamento nível → papel.
+--                                            Nada mais no schema reescreve isto.
+--   app.nivel_efetivo(documento_id, pagina)  qual É o nível desta página (override + herança).
+--   app.documento_visivel(documento_id)      ENTRADA para o arquivo/linha inteiro.
+--   app.pagina_visivel(documento_id, pagina) ENTRADA para conteúdo por página.
+--
+-- Nenhuma policy reescreve o predicado: todas chamam uma das duas ENTRADAS.
 -- ****************************************************************************
+
+-- Dado um nível já resolvido, este papel enxerga? NULL (página não classificada em documento
+-- misto) cai no ELSE => false. FALHA FECHADO — é o ponto central do ADR-0018.
+create or replace function app.nivel_visivel(p_nivel public.visibilidade_documento, p_documento_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select case p_nivel
+    when 'publico'     then true
+    when 'autenticado' then app.eh_autenticado()
+    when 'conselho'    then app.eh_gestao()
+    when 'restrito'    then app.eh_gestao() or exists (
+                               select 1 from public.documento_unidades du
+                                where du.documento_id = p_documento_id
+                                  and du.unidade_id in (select app.unidades_da_pessoa()))
+    else false
+  end
+$$;
+
+-- Nível efetivo de UMA página: override explícito, ou herança do documento — EXCETO em documento
+-- marcado tem_paginas_mistas, onde página sem override não herda nada (devolve NULL).
+create or replace function app.nivel_efetivo(p_documento_id uuid, p_pagina int)
+returns public.visibilidade_documento language sql stable security definer set search_path = '' as $$
+  select case when d.tem_paginas_mistas then dp.visibilidade
+              else coalesce(dp.visibilidade, d.visibilidade)
+         end
+    from public.documentos d
+    left join public.documento_paginas dp
+      on dp.documento_id = d.id and dp.pagina = p_pagina
+   where d.id = p_documento_id
+$$;
+
+-- ENTRADA 1 — arquivo/linha inteiro. Usada por: documentos, storage.objects do bucket
+-- 'documentos'. O PDF cru NÃO é fatiado: baixar o arquivo inteiro continua governado pelo nível
+-- do DOCUMENTO. Anônimo não baixa a ata de 36 páginas só porque 12 delas são públicas.
 create or replace function app.documento_visivel(p_documento_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
   select exists (
     select 1 from public.documentos d
      where d.id = p_documento_id
        and (
-         -- gestão vê tudo, publicado ou não (conferência e curadoria)
+         app.eh_gestao()  -- gestão vê tudo, publicado ou não (conferência e curadoria)
+         or (d.status = 'publicado' and app.nivel_visivel(d.visibilidade, d.id))
+       )
+  )
+$$;
+
+-- ENTRADA 2 — conteúdo POR PÁGINA. Usada por: documento_paginas, chunks (pela pagina_ini),
+-- deliberacoes (pela pagina). É a granularidade que o texto extraído, a busca e a citação exigem.
+create or replace function app.pagina_visivel(p_documento_id uuid, p_pagina int)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select exists (
+    select 1 from public.documentos d
+     where d.id = p_documento_id
+       and (
          app.eh_gestao()
-         or (
-           d.status = 'publicado'  -- morador nunca vê rascunho (SPEC §6.1)
-           and (
-                d.visibilidade = 'publico'
-             or (d.visibilidade = 'autenticado' and app.eh_autenticado())
-             or (d.visibilidade = 'restrito' and exists (
-                   select 1 from public.documento_unidades du
-                    where du.documento_id = d.id
-                      and du.unidade_id in (select app.unidades_da_pessoa())))
-           )
-         )
+         or (d.status = 'publicado' and app.nivel_visivel(app.nivel_efetivo(d.id, p_pagina), d.id))
        )
   )
 $$;
@@ -250,11 +293,25 @@ revoke all on all functions in schema app from public, anon, authenticated;
 grant execute on function
   app.pessoa_atual(), app.tem_papel(public.papel), app.eh_editor(), app.eh_gestao(),
   app.eh_autenticado(), app.papel_atual(), app.unidades_da_pessoa(),
-  app.documento_visivel(uuid)
+  app.nivel_visivel(public.visibilidade_documento, uuid), app.nivel_efetivo(uuid, int),
+  app.documento_visivel(uuid), app.pagina_visivel(uuid, int)
 to authenticated;
--- app.documento_visivel também precisa de EXECUTE para `anon` (documento público sem login).
-grant execute on function app.documento_visivel(uuid), app.eh_gestao(), app.eh_autenticado() to anon;
+-- As duas ENTRADAS também precisam de EXECUTE para `anon`: documento público sem login, e
+-- página pública dentro de documento não-público (o regimento embutido na ata).
+grant execute on function
+  app.documento_visivel(uuid), app.pagina_visivel(uuid, int),
+  app.eh_gestao(), app.eh_autenticado()
+to anon;
 ```
+
+> **Escolher a entrada errada é a armadilha nº1 numa forma mais sutil.** `documento_visivel` onde
+> cabia `pagina_visivel` publica a página da ata junto com a do regimento. A tabela abaixo é
+> normativa; o `auditor-rls` testa as duas.
+>
+> | Objeto | Entrada correta |
+> |---|---|
+> | `documentos`, `storage.objects` (bucket `documentos`) | `app.documento_visivel(id)` |
+> | `documento_paginas`, `chunks`, `deliberacoes` | `app.pagina_visivel(documento_id, pagina)` |
 
 ---
 

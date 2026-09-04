@@ -62,7 +62,13 @@ create index pessoas_nome_trgm_idx on public.pessoas using gin (nome extensions.
 
 -- ADR-0012 item 7 / ADR-0014 item 4 — ÚNICA exceção de privilégio de coluna do schema.
 -- RLS é por linha e não esconde coluna; cpf_enc sai do alcance de `authenticated` por GRANT.
-revoke select (cpf_enc) on public.pessoas from authenticated, anon;
+-- ARMADILHA DE POSTGRES (achada e corrigida nesta migração antes de aplicar em qualquer
+-- ambiente): `REVOKE SELECT (col) ON tabela FROM role` NÃO subtrai de um `GRANT SELECT ON
+-- tabela` já concedido — table-level e column-level ACL são UNIÃO, nunca subtração. "GRANT
+-- SELECT na tabela toda, depois REVOKE SELECT só na coluna" não bloqueia nada, em NENHUMA
+-- ordem. A única forma real de excluir uma coluna é NUNCA conceder SELECT de tabela inteira e
+-- em vez disso conceder SELECT coluna a coluna — ver GRANT explícito no bloco de RLS abaixo
+-- (substitui o `grant select on public.pessoas` genérico).
 
 comment on table public.pessoas is
   'RLS: pessoa lê a PRÓPRIA linha; conselho lê todas SEM CPF; editor lê todas. Escrita só editor. '
@@ -136,8 +142,14 @@ grant insert, update, delete on public.unidades to authenticated;
 alter table public.pessoas enable row level security;
 alter table public.pessoas force row level security;
 revoke all on public.pessoas from public, anon, authenticated;
-grant select on public.pessoas to authenticated; -- cpf_enc já sem SELECT por grant de coluna acima
+-- GRANT SELECT coluna a coluna, SEM cpf_enc — nunca "grant select on public.pessoas" (ver
+-- armadilha de Postgres comentada junto à definição da tabela: revoke de coluna não subtrai de
+-- grant de tabela, em nenhuma ordem).
+grant select (id, auth_user_id, nome, email, cpf_hash, cpf_ultimos_digitos, telefone, ativa,
+  observacoes, criado_em, criado_por, atualizado_em) on public.pessoas to authenticated;
 grant insert, update on public.pessoas to authenticated; -- delete: ninguém (anonimização, não exclusão)
+-- INSERT/UPDATE de tabela inteira (acima) permanecem, inclusive cpf_enc: é o editor cifrando e
+-- gravando; só a LEITURA de volta é vedada.
 
 alter table public.vinculos enable row level security;
 alter table public.vinculos force row level security;

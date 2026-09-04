@@ -105,7 +105,10 @@ create table public.fornecedores (
   constraint fornecedores_cpf_par_ck check ((cpf_hash is null) = (cpf_enc is null))
 );
 create index fornecedores_razao_trgm_idx on public.fornecedores using gin (razao_social extensions.gin_trgm_ops);
-revoke select (cpf_enc) on public.fornecedores from authenticated, anon;
+-- cpf_enc fica de fora do GRANT SELECT coluna a coluna no bloco de RLS abaixo — NUNCA
+-- "grant select on public.fornecedores" seguido de revoke da coluna: REVOKE de coluna não
+-- subtrai de GRANT de tabela em nenhuma ordem (armadilha de Postgres documentada em
+-- 20260904120300_identidade_tabelas.sql, onde foi achada e corrigida).
 
 comment on table public.fornecedores is
   'RLS: leitura para autenticado (razão social e CNPJ de quem o condomínio paga é informação de '
@@ -115,8 +118,13 @@ comment on table public.fornecedores is
 alter table public.fornecedores enable row level security;
 alter table public.fornecedores force row level security;
 revoke all on public.fornecedores from public, anon, authenticated;
-grant select on public.fornecedores to authenticated;
+-- GRANT SELECT coluna a coluna, SEM cpf_enc — nunca "grant select on public.fornecedores".
+grant select (id, cnpj, cpf_hash, razao_social, nome_fantasia, categoria,
+  eh_sindico_terceirizado, eh_administradora, ativo, criado_em, criado_por)
+  on public.fornecedores to authenticated;
 grant insert, update, delete on public.fornecedores to authenticated;
+-- INSERT/UPDATE/DELETE de tabela inteira (acima) permanecem, inclusive cpf_enc: é o editor
+-- cifrando e gravando; só a LEITURA de volta é vedada.
 
 create policy fornecedores_select on public.fornecedores
   for select to authenticated using ( app.eh_autenticado() );
