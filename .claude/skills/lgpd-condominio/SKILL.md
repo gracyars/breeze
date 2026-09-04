@@ -63,6 +63,10 @@ Cada papel vê o mínimo necessário à função, nunca o máximo disponível.
 Minimização não é só "quem lê a tabela" — é também "quantos campos o SELECT traz". Uma view de
 `cobrancas` para `morador` nunca faz `SELECT *`; traz só a própria unidade mais o agregado.
 
+**Minimização tem eixo temporal, não só de papel.** "Quem vê" inclui "até quando vê". Papel e
+vínculo têm mandato datado e expiram sozinhos; qualquer flag booleana usada como portão de acesso
+(`pessoas.ativa`) não expira e vira acesso indevido silencioso. Ver seção 6-bis.
+
 ## 4. Inadimplência: por que nunca nominal para morador
 
 Maior potencial de constrangimento do produto — expõe dificuldade financeira de vizinho
@@ -107,15 +111,48 @@ Por tipo (SPEC §7):
 
 - **Atas, convenção, laudos técnicos** — permanentes; valor legal e histórico contínuo.
 - **Financeiro e cobranças** — 5 anos, alinhado ao prazo usual de guarda contábil/fiscal no Brasil.
-- **Log de acesso** (quem consultou inadimplência nominal, quem leu CPF em claro) — 6 meses.
+- **Log de acesso** (`audit.acesso`: quem consultou inadimplência nominal, quem leu CPF em claro)
+  — 6 meses.
+- **`audit.log`** — permanente e não expurgável, por construção (cadeia de hash).
 
-**Rotina de anonimização de ex-morador:** ao encerrar o vínculo (`vinculos.fim`) sem outro
-vínculo ativo, a rotina deve (a) preservar todo lançamento, cobrança e agregado do período
-vinculado — seguem fazendo parte da prestação de contas e não podem sumir; (b) apagar ou
-anonimizar o PII direto (`nome` → identificador genérico, `cpf_hash`/`cpf_enc`/`email`/
-`telefone` → nulos), preservando `pessoa_id` como chave técnica para os agregados históricos
-seguirem consistentes. É anonimização (LGPD art. 12), não eliminação de registro — depois dela a
-LGPD deixa de se aplicar porque o dado não identifica mais ninguém.
+## 6-bis. Off-boarding de ex-morador — dois estágios, nunca um
+
+Parecer completo: `docs/juridico/off-boarding-ex-morador.md`. Resumo normativo:
+
+**Estágio 1 — desativar o acesso, em `vinculos.fim`, com zero dias de tolerância.**
+O direito de inspecionar documentos da administração é direito **do condômino** (CC art. 1.335;
+STJ REsp 2.050.372): extinta a condição, extingue-se o direito. Manter leitura de `autenticado`
+depois disso viola necessidade (art. 6º, III) e o art. 15, I (fim da finalidade). O acesso deve
+ser **derivado** do fato datado — vínculo vigente **ou** papel vigente — nunca de flag booleana
+que exige um UPDATE humano que ninguém lembra de rodar. Não construir janela de acesso degradado:
+o que o ex-morador tem direito de obter (cópia do próprio período, LGPD art. 18, II; documento
+para defesa em processo, art. 7º, VI) se atende **por export sob pedido**, com registro em
+`audit.acesso`, não por sessão aberta.
+
+**Estágio 2 — anonimizar a PII cadastral, em `vinculos.fim + 5 anos.`**
+Anonimizar já no `fim` é **erro** — foi a redação anterior desta skill e está corrigida aqui.
+Cedo demais destrói a capacidade de cobrar débito remanescente, de responder a pedido do titular
+e de provar quitação dentro do prazo de guarda de **5 anos** (Lei 4.591/64, art. 22, §1º, "g" —
+único piso legal explícito de guarda documental condominial). Ao vencer o prazo, sem outro vínculo
+ou papel vigente: (a) preservar todo lançamento, cobrança e agregado do período vinculado — seguem
+fazendo parte da prestação de contas; (b) anonimizar o PII direto (`nome` → identificador
+genérico; `cpf_hash`/`cpf_enc`/`cpf_ultimos_digitos`/`email`/`telefone` → nulos; `auth_user_id` →
+nulo), preservando `pessoa_id` como chave técnica para os agregados históricos seguirem
+consistentes. É anonimização (LGPD art. 12), não eliminação de registro — depois dela a LGPD
+deixa de se aplicar porque o dado não identifica mais ninguém.
+
+**Nunca se anonimiza — lista fechada, e cada item por um motivo distinto:**
+
+| Objeto | Por quê |
+|---|---|
+| `pareceres` / `parecer_signatarios` de quem foi conselheiro | A assinatura **é** a validade do ato (CC art. 1.356). Anonimizar destrói a força probatória do parecer, não protege ninguém. LGPD art. 16, I |
+| `audit.log` | Redação retroativa quebra a cadeia de hash e com ela toda a garantia de não-adulteração. A trilha só fica coberta se `actor` for **id**, nunca nome denormalizado — verificar antes de assumir |
+| Nome, unidade e voto em ata e deliberação | Registro da assembleia; art. 16, I |
+| `lancamentos`, `cobrancas` do período | Prestação de contas; imutáveis por ADR-0011 |
+
+**O que a rotina não consegue fazer sozinha:** detectar venda que ninguém informou. Nenhum schema
+adivinha o fato do mundo. O máximo honesto é tornar a inconsistência **visível** — alerta de
+unidade sem vínculo vigente e de pessoa ativa sem vínculo e sem papel — não fingir automação.
 
 ## 7. Direitos do titular
 
@@ -123,6 +160,7 @@ Pedido de morador (acesso, correção, eliminação — LGPD art. 18):
 
 - **Acesso** — `editor` exporta `pessoas`, `vinculos`, `cobrancas` da própria unidade do
   titular. CPF em claro só se o pedido vier do próprio titular autenticado, nunca por terceiro.
+  Vale também para ex-morador dentro do prazo de guarda: é este o caminho, e não sessão mantida.
 - **Correção** — dado cadastral simples corrigido direto pela `editor`; correção de CPF exige
   nova verificação, não só sobrescrever.
 - **Eliminação** — aplicável a dado cadastral (e-mail, telefone) ao deixar o condomínio.
@@ -130,7 +168,7 @@ Pedido de morador (acesso, correção, eliminação — LGPD art. 18):
   valor contábil/legal — têm base legal própria (obrigação legal de prestação de contas),
   independente da vontade do titular, e são hipótese expressa de exceção ao direito de
   eliminação (LGPD art. 16). Resposta correta é explicar a base legal e, quando aplicável,
-  aplicar a anonimização da seção 6 em vez da eliminação total.
+  aplicar a anonimização da seção 6-bis em vez da eliminação total.
 
 Todo pedido e resposta ficam registrados (quem pediu, o que foi feito, quando).
 
@@ -153,6 +191,9 @@ visibilidade/retenção — gatilho do agente, `docs/02-AGENTES.md`):
 8. Visibilidade `público`: só convenção e regimento passam sem redação. Ata e balancete exigem
    autenticação — proposta de publicar como público é veto automático sem etapa de anonimização.
 9. Existe caminho testável de exercício de direito do titular para esse dado?
+10. **O acesso a esse dado expira sozinho?** Todo portão de leitura deriva de fato datado
+    (vínculo ou mandato vigente). Portão que depende de alguém lembrar de um UPDATE é achado
+    de vazamento, não pendência operacional — ver seção 6-bis.
 
 Item que falhar é veto, não sugestão — `juridico-lgpd` tem poder de veto explícito
 (`docs/02-AGENTES.md`, item 3).

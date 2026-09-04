@@ -117,6 +117,11 @@ comportamento padrão, não a exceção. Documento não-misto não paga esse cus
 ## Status
 
 Aceito, 2026-09-04. Adendo ao ADR-0012 (que permanece Aceito e íntegro).
+**Emendado pelo ADR-0019:** este ADR resolveu a granularidade no índice e assumiu, sem verificar,
+que isso bastava — o `auditor-rls` (V3) provou que o **arquivo** continuava monolítico e baixável
+pelo nível do documento. O ADR-0019 impõe a invariante que faltava (`documentos.visibilidade` é o
+**piso**: override de página só amplia) e torna `tem_paginas_mistas` derivada (V1). O caso real e
+o modelo de duas entradas descritos aqui permanecem válidos.
 Registrado em `docs/04-DECISOES.md` como D11. Implementado em
 `supabase/migrations/20260904120600_acervo_tabelas.sql` e
 `supabase/migrations/20260904120800_visibilidade_documento_funcoes.sql`.

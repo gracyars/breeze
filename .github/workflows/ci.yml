@@ -97,19 +97,35 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
+      # `pg_prove` (harness TAP) não vem com o runner nem com o Supabase CLI — é o mesmo
+      # pacote Perl que o auditor-rls usou para validar a suíte localmente
+      # (TAP::Parser::SourceHandler::pgTAP). Tenta o pacote do sistema primeiro (mais rápido,
+      # não depende de mirror do CPAN); cai para cpanm só se o apt não tiver o pacote nesta
+      # imagem de runner.
+      - name: Instalar pg_prove
+        run: |
+          set -euo pipefail
+          if sudo apt-get update && sudo apt-get install -y libtap-parser-sourcehandler-pgtap-perl; then
+            echo "pg_prove instalado via apt (libtap-parser-sourcehandler-pgtap-perl)."
+          else
+            echo "Pacote apt indisponível nesta imagem — instalando via cpanm (CPAN)."
+            command -v cpanm >/dev/null 2>&1 || curl -fsSL https://cpanmin.us | sudo perl - App::cpanminus
+            sudo cpanm --notest TAP::Parser::SourceHandler::pgTAP
+          fi
+          pg_prove --version
       # `supabase start` sobe o stack local (Postgres + extensões) e aplica todas as migrações
-      # versionadas em supabase/migrations antes de qualquer teste.
+      # versionadas em supabase/migrations antes de qualquer teste — inclusive
+      # 20260904122300_pgtap_test_only.sql, que instala a extensão pgtap. Esse arquivo é
+      # correto AQUI (local/CI); ele é filtrado no job db-push antes de tocar produção — ver
+      # comentário no passo "Filtrar migrações de teste" abaixo.
       - name: Start Supabase local
         run: supabase start
-      # Preenchido por auditor-rls (supabase/tests/*.sql). Vazio hoje = passa vazio, não pula —
-      # o comando falha explicitamente assim que houver arquivo com policy quebrando.
+      # Suíte real do auditor-rls em supabase/tests/01..04*.sql. Sem condicional de "se vazio,
+      # pula" — a suíte existe, e o job PRECISA ficar vermelho enquanto ela tiver assert
+      # falhando (hoje: 20 asserts vermelhos de propósito, correções em curso pelo
+      # eng-supabase/arquiteto). Não mascarar isso é o ponto do job.
       - name: Rodar testes pgTAP de RLS
-        run: |
-          if find supabase/tests -name '*.sql' -print -quit | grep -q .; then
-            supabase test db --local supabase/tests
-          else
-            echo "Nenhum teste pgTAP em supabase/tests ainda (slot do auditor-rls). Pulando sem falhar o build inicial."
-          fi
+        run: supabase test db --local supabase/tests
       - name: Parar Supabase local
         if: always()
         run: supabase stop
@@ -125,16 +141,51 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
+      # Filtro obrigatório antes de qualquer push remoto. `20260904122300_pgtap_test_only.sql`
+      # (e qualquer futura migração terminada em `_test_only.sql`) instala a extensão pgtap —
+      # necessária em local/CI para o job rls-test, mas NUNCA em staging/produção: extensão de
+      # teste é superfície de ataque desnecessária num banco real (o próprio arquivo documenta
+      # essa regra). Isto NÃO é bug nem esquecimento — é filtro de propósito. Se você está lendo
+      # isto porque o arquivo "sumiu" do deploy, é intencional; não remova este passo.
+      #
+      # Mecanismo: copia supabase/config.toml + todas as migrações, exceto *_test_only.sql,
+      # para um workdir temporário, e aponta `supabase --workdir` para ele em todos os passos
+      # seguintes — o diretório `supabase/migrations` do checkout original nunca é tocado.
+      - name: Filtrar migrações de teste (*_test_only.sql) antes do deploy
+        run: |
+          set -euo pipefail
+          DEPLOY_ROOT="$(mktemp -d)"
+          mkdir -p "$DEPLOY_ROOT/supabase/migrations"
+          cp supabase/config.toml "$DEPLOY_ROOT/supabase/config.toml"
+
+          shopt -s nullglob
+          skipped=()
+          for f in supabase/migrations/*.sql; do
+            base="$(basename "$f")"
+            if [[ "$base" == *_test_only.sql ]]; then
+              skipped+=("$base")
+              continue
+            fi
+            cp "$f" "$DEPLOY_ROOT/supabase/migrations/$base"
+          done
+
+          echo "DEPLOY_WORKDIR=$DEPLOY_ROOT" >> "$GITHUB_ENV"
+          if [ "${#skipped[@]}" -eq 0 ]; then
+            echo "Nenhuma migração *_test_only.sql encontrada — nada para filtrar desta vez."
+          else
+            echo "Migrações puladas no deploy remoto (extensão/dado só de teste):"
+            printf '  - %s\n' "${skipped[@]}"
+          fi
       # Requer secrets configurados no repositório (ver docs/ops/backup.md e pendências no
       # relatório de entrega do devops): SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD,
       # SUPABASE_PROJECT_ID. Schema nunca é editado pelo dashboard — só migração versionada.
       - name: Link ao projeto remoto
-        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+        run: supabase --workdir "$DEPLOY_WORKDIR" link --project-ref "$SUPABASE_PROJECT_ID"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
-      - name: Aplicar migrações no remoto
-        run: supabase db push --linked
+      - name: Aplicar migrações no remoto (sem *_test_only.sql)
+        run: supabase --workdir "$DEPLOY_WORKDIR" db push --linked
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
@@ -142,7 +193,7 @@ jobs:
       # automaticamente nesta fase (F0). Baixar e commitar manualmente até isso virar um passo
       # de bot dedicado.
       - name: Gerar tipos TS a partir do schema remoto
-        run: supabase gen types typescript --linked > database.types.ts
+        run: supabase --workdir "$DEPLOY_WORKDIR" gen types typescript --linked > database.types.ts
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       - uses: actions/upload-artifact@v4

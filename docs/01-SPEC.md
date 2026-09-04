@@ -53,11 +53,11 @@ não podem divergir.
 | `vinculos` | unidade_id, pessoa_id, tipo, inicio, fim | `(unidade_id, fim)` | própria unidade; conselho tudo |
 | `papeis` | pessoa_id, papel, mandato_inicio, mandato_fim, concedido_por | `(pessoa_id, mandato_fim)`, `(papel, mandato_inicio, mandato_fim)` | leitura: próprios papéis, gestão vê todos; **escrita só `editor` com AAL2** |
 | `tipos_documento` | codigo, nome, visibilidade_padrao, `permite_publico`, retencao_meses | pk textual | leitura livre; escrita `editor`. Tabela de domínio: taxonomia cresce sem deploy |
-| `documentos` | tipo, titulo, data_documento, competencia, storage_path, `sha256 unique`, paginas, ocr_aplicado, status, **visibilidade**, versao_pipeline | `(tipo, data_documento)`, `(visibilidade, status)` | por `visibilidade`: público / autenticado / conselho / restrito — sempre via `app.documento_visivel()` |
+| `documentos` | tipo, titulo, data_documento, competencia, storage_path, `sha256 unique`, paginas, ocr_aplicado, status, **visibilidade**, **tem_paginas_mistas**, versao_pipeline | `(tipo, data_documento)`, `(visibilidade, status)` | por `visibilidade`: público / autenticado / conselho / restrito — arquivo inteiro via `app.documento_visivel()` |
 | `documento_unidades` | documento_id, unidade_id | pk composta | leitura: própria unidade + gestão. **Sem ela, `visibilidade='restrito'` não é avaliável** |
-| `documento_paginas` | documento_id, pagina, texto, texto_nativo, fonte_texto, confianca_ocr | `unique(documento_id,pagina)` | **espelha `documentos`** |
-| `chunks` | documento_id, pagina_ini, pagina_fim, ordem, texto, `tsv` generated stored, `embedding vector(1536)` | GIN(tsv); HNSW só acima de ~10k linhas | **espelha `documentos` — crítico** |
-| `contas` | codigo, nome, natureza, nivel, conta_pai_id, aceita_lancamento, fundo, exige_deliberacao, codigo_administradora | árvore, `(codigo text_pattern_ops)` | leitura autenticados; escrita `editor` |
+| `documento_paginas` | documento_id, pagina, texto, texto_nativo, fonte_texto, confianca_ocr, **visibilidade** (override, nullable) | `unique(documento_id,pagina)` | **espelha `documentos`, por página** — `app.pagina_visivel()` |
+| `chunks` | documento_id, pagina_ini, pagina_fim, ordem, texto, `tsv` generated stored, `embedding vector(1536)` | GIN(tsv); HNSW só acima de ~10k linhas | **espelha `documentos` por página, via `pagina_ini` — crítico**; chunk não cruza fronteira de visibilidade |
+| `contas` | codigo, nome, natureza, nivel, conta_pai_id, aceita_lancamento, codigo_administradora | árvore, `(codigo text_pattern_ops)` | leitura autenticados; escrita `editor`. **Não carrega regra de fiscalização** (§5.3) |
 | `fornecedores` | cnpj, `cpf_hash`, razao_social, `eh_sindico_terceirizado`, `eh_administradora` | `unique(cnpj)`, trigram(razao_social) | leitura autenticados (sem `cpf_enc`); escrita `editor` |
 | `fornecedor_dados_bancarios` | fornecedor_id, banco, agencia, conta_mascarada, `chave_pix_hash`, vigencia | `(fornecedor_id, vigente_ate)` | só `conselho` e `editor`. Existe para o alerta "troca de dados bancários"; nada em claro |
 | `contratos` | fornecedor_id, objeto, vigencia, `valor_mensal_centavos`, indice_reajuste, documento_id, deliberacao_id | `(vigencia_fim)` parcial | leitura autenticados |
@@ -80,6 +80,32 @@ não podem divergir.
 
 Orçado×realizado e posição de inadimplência são **views**, não tabelas materializadas.
 Não otimizar antes de doer.
+
+**Visibilidade é resolvida por página, não só por documento.** O acervo real trouxe uma ata de 36
+páginas que embute o Regimento Interno inteiro como anexo: um `documento_id` com conteúdo que
+deveria ser público (o regimento, normativo e impessoal) e conteúdo que exige autenticação (a ata,
+com nomes e votos). Marcar o documento inteiro como público vaza nomes pela busca; marcar como
+autenticado esconde o regimento — que é justamente o que o produto existe para tornar consultável.
+Por isso: `documentos.tem_paginas_mistas` mais `documento_paginas.visibilidade` (override
+nullable), com duas entradas de RLS — `app.documento_visivel(id)` para o arquivo inteiro (o PDF
+cru não é fatiado: ninguém baixa a ata porque 12 páginas são públicas) e
+`app.pagina_visivel(documento_id, pagina)` para texto extraído, busca e citação. Enquanto
+`tem_paginas_mistas` for true, página **sem** classificação própria **não herda** o padrão do
+documento. E um chunk não pode cruzar fronteira de visibilidade: com ~15% de overlap (§3.4), o
+chunk atravessa página por construção, e sem trava o vazamento seria o padrão.
+
+**A visibilidade do documento é o piso — sem isso, o resto é ilusório.** Regra dura:
+`ordem(documentos.visibilidade) <= ordem(qualquer página sua)`, com
+`conselho < restrito < autenticado < publico` (atenção: **`restrito` é mais permissivo que
+`conselho`**, porque acrescenta a unidade vinculada à gestão — o nome engana). Ou seja: **override
+de página só amplia o alcance do texto derivado, nunca o reduz.** O motivo é físico: o PDF é
+atômico e o gate do bucket é o do documento; sem essa invariante, um documento `publico` com uma
+página `conselho` negava o texto na busca **e entregava o arquivo inteiro para anônimo**. Quando
+for preciso restringir de fato uma página, desce-se o documento inteiro e ampliam-se as demais
+páginas — o corpo continua legível e citável, e o arquivo acompanha sua página mais sensível.
+`tem_paginas_mistas` é **derivada** (ligada por trigger ao surgir o primeiro override), nunca uma
+caixinha que alguém precisa lembrar de marcar para a trava funcionar. Detalhes em ADR-0018,
+ADR-0019 e `docs/schema.md`.
 
 **Âncora de citação.** Chunk é derivado e regenerável: o pipeline é idempotente e reprocessar
 reescreve a segmentação (§3). Portanto nenhuma citação persistida é ancorada em `chunk_id`. A
@@ -115,8 +141,9 @@ banco) para permitir o lookup; `cpf_enc` é a versão reversível, lida só pela
 SQL: o banco recebe `bytea` pronto e nenhum segredo entra nele. Consequência direta: **não existe
 view que devolva CPF em claro** — com a chave fora do banco, nenhuma view consegue decifrar, e
 RLS não filtra coluna. O acesso ao CPF em claro é uma rotina de servidor que (a) confirma `editor`
-com AAL2, (b) decifra, (c) registra em `audit.acesso` com motivo. `cpf_enc` tem
-`REVOKE SELECT` para `authenticated`. Para o `conselho`, a exibição usa
+com AAL2, (b) decifra, (c) registra em `audit.acesso` com motivo. `cpf_enc` fica **fora da lista
+de colunas do `GRANT SELECT`** — não por `REVOKE` de coluna, que não funciona (ADR-0017).
+Para o `conselho`, a exibição usa
 `cpf_ultimos_digitos` (`***.***.789-**`), que guarda os dígitos 7–9 e **jamais** os
 verificadores. Ver ADR-0014.
 
@@ -184,7 +211,7 @@ comparabilidade.
 | Despesa sem comprovante | Lançamento pago sem anexo | Alta |
 | Estouro de orçamento | Conta atinge 80% do previsto (aviso) / >100% (crítico) | Média / Alta |
 | Cotação ausente | Despesa não recorrente acima do limiar parametrizável (sugestão inicial R$5.000) sem 2+ cotações anexadas | Alta |
-| Fundo de reserva sem ata | Débito em conta de fundo de reserva sem `deliberacao_id` vinculada | Crítica |
+| Fundo de reserva sem ata | `lancamentos.fundo <> 'nenhum'` **e** `tipo = 'despesa'` **e** `deliberacao_id` nulo — **independente da conta debitada** | Crítica |
 | Contrato vencendo | 30 dias antes do fim da vigência | Média |
 | Renovação não deliberada | Contrato acima da alçada renovado sem ata vinculada | Alta |
 | Fornecedor não cadastrado | Pagamento a CNPJ ausente de `fornecedores` | Alta |
@@ -193,6 +220,20 @@ comparabilidade.
 | Troca de dados bancários | Alteração de conta de fornecedor recorrente (golpe do boleto) | Crítica |
 
 Limiares vivem em tabela de configuração (`configuracoes`), não em código.
+
+**Regra de fiscalização se avalia sobre o atributo do fato, nunca sobre a classificação da
+conta.** Correção de modelagem, não de redação: a versão anterior deste documento apoiava o alerta
+de fundo em `contas.exige_deliberacao` — uma flag fixa na conta. Está errado. Qualquer despesa
+pode ser paga com fundo de reserva: uma bomba queimada em emergência tanto quanto uma obra
+planejada. Amarrar a regra a um conjunto fechado de contas produz **falso negativo silencioso** —
+o alerta não dispara justamente para o gasto que ninguém previu, que é o que mais interessa
+fiscalizar. E cria uma fiscalização que depende de alguém ter marcado a caixinha certa antes;
+quem quer escapar não marca. `contas.fundo` e `contas.exige_deliberacao` saem do modelo, e com
+elas a conta sintética "2.12 Uso de fundos": uso de fundo é a despesa finalística de sempre
+(elevador, obra, hidráulica) com a origem do recurso marcada em `lancamentos.fundo` — preserva
+"o quê" foi comprado e "de onde" saiu o dinheiro, sem duplicar valor no resultado nem divergir do
+balancete da administradora. Aporte **ao** fundo não exige ata; o que exige é a **saída**. Ver
+`docs/04-DECISOES.md` D12 e `docs/dominio/plano-de-contas-decisoes.md`.
 
 **Alerta que depende de histórico.** "Variação atípica" pressupõe média móvel de 6 meses e
 "fracionamento suspeito" pressupõe base de comparação; num condomínio recém-entregue esse
@@ -298,7 +339,11 @@ em branco, não por cor. A régua: deve parecer confiável como um extrato banc�
 ## 7. Segurança e LGPD
 
 - **RLS negando por padrão** em todas as tabelas, com helper `papel_atual(uid)` lendo mandato vigente. Testes de policy (pgTAP) versionados e rodando no CI — regressão de RLS é vazamento.
-- **Armadilha nº1:** RLS em `documentos` sem RLS equivalente em `chunks` e `documento_paginas` vaza conteúdo restrito pela busca. Espelhar sempre.
+- **Armadilha nº1:** RLS em `documentos` sem RLS equivalente em `chunks` e `documento_paginas` vaza conteúdo restrito pela busca. Espelhar sempre — e espelhar **chamando a mesma função**, nunca copiando o predicado, porque cópia diverge e diverge calado.
+- **Armadilha nº1, forma sutil (ADR-0018):** com visibilidade por página, há **duas** entradas de RLS. `app.documento_visivel(id)` governa a linha e o arquivo (bucket `documentos`); `app.pagina_visivel(documento_id, pagina)` governa `documento_paginas`, `chunks` (pela `pagina_ini`) e `deliberacoes`. Usar a entrada de documento onde cabia a de página publica a ata junto com o regimento embutido. O núcleo do mapeamento nível → papel continua em uma função só (`app.nivel_visivel`). Página sem classificação em documento misto **nega por padrão**, e chunk não cruza fronteira de visibilidade.
+- **Restrição por página é ilusória enquanto o arquivo é baixável (ADR-0019).** Resolver a granularidade no índice e esquecer o objeto original é pior que não ter a funcionalidade: dá sensação de controle. Invariante obrigatória: **`documentos.visibilidade` é o piso** — no máximo tão permissiva quanto sua página mais restritiva — garantida por trigger nas duas direções (ao classificar página e ao afrouxar documento). Ordem de permissividade: `conselho < restrito < autenticado < publico`; **`restrito` é mais permissivo que `conselho`** apesar do nome, e inverter os dois deixa página de conselho sair pelo arquivo de uma unidade.
+- **Trava de segurança não pode depender de flag marcada à mão.** `tem_paginas_mistas` era autoral; quando não era marcada, a trava de fronteira de chunk não rodava e o chunk vazava pela busca, sem login. Agora é derivada por trigger, e a trava de chunk roda sempre que houver override no intervalo — não "quando a flag estiver ligada". Mesma lição de §5.3: regra de proteção avaliada sobre o fato, nunca sobre uma marcação que alguém precisa lembrar de fazer.
+- **`REVOKE` de coluna não esconde coluna (ADR-0017).** `REVOKE SELECT (col) ON tabela FROM role` **não subtrai** de um `GRANT SELECT ON tabela`: ACL de tabela e de coluna são união, em qualquer ordem. O comando não falha, não avisa e não tem efeito — foi a chegada mais perto que o projeto esteve de expor `cpf_enc` a todo autenticado. A única forma real de excluir coluna é nunca conceder `SELECT` de tabela inteira e usar `GRANT SELECT (lista)`. Consequência aceita: coluna nova fica invisível até entrar na lista.
 - **Anexos financeiros** em bucket próprio, acesso só por signed URL de TTL curto (60–300s) gerada no servidor após checagem de papel. Nunca embutida em página cacheada na CDN.
 - **Trilha imutável:** triggers `SECURITY DEFINER` gravam em `audit.log`; encadeamento `hash_registro = sha256(hash_anterior || linha canônica)`; âncora semanal do hash-topo enviada por e-mail ao conselho. Assim, adulteração por quem tem acesso ao banco — inclusive a `editor` — fica detectável. Isso é o que dá ao produto autoridade perante os moradores: nem quem opera o sistema pode reescrever o passado sem deixar rastro. Três exigências de implementação que não são detalhe: (a) o trigger toma `pg_advisory_xact_lock` **antes** de ler o último hash — sem isso, duas transações concorrentes leem o mesmo `hash_anterior` e a cadeia bifurca, falha que só aparece sob carga e destrói a garantia em silêncio; (b) a serialização canônica é parte do contrato e está fixada em `docs/schema.md` — mudá-la quebra a cadeia; (c) o trigger **redige** colunas sensíveis (`cpf_enc`) em `antes`/`depois`, senão a trilha vira uma segunda cópia irremovível de dado pessoal.
 - **Trilha ≠ log de acesso.** `audit.log` registra **mutação**: encadeado, append-only, permanente. `audit.acesso` registra **leitura de dado sensível** (CPF em claro, inadimplência nominal, anexo financeiro, export): sem encadeamento e expurgável em 6 meses. São duas tabelas porque retenção curta e cadeia de hash são incompatíveis — misturá-las obrigaria a escolher entre violar a retenção e quebrar a cadeia.

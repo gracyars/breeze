@@ -34,7 +34,10 @@ Regras que acompanham:
    um atributo da entidade fiscalizada.
 2. Tabela de domínio carrega os atributos que a regra de negócio precisa, não só o rótulo:
    `tipos_documento.permite_publico` e `visibilidade_padrao` alimentam o trigger de visibilidade
-   (ADR-0004); `contas.exige_deliberacao` alimenta o alerta de fundo sem ata.
+   (ADR-0004); `tipos_alerta.requer_historico_meses` e `severidade_padrao` alimentam o motor de
+   alertas. *(O exemplo original citava `contas.exige_deliberacao`; essa coluna foi removida pela
+   D12 — regra de fiscalização não se avalia sobre atributo de conta. A decisão deste ADR não
+   muda, só o exemplo.)*
 3. **Valor de enum nunca é removido.** Deprecar é parar de usar e bloquear na aplicação; remover
    é migração com ADR próprio.
 4. Enums vivem em `public` (o gerador de tipos TypeScript os traduz para union types — ganho

@@ -18,7 +18,25 @@ ADR-0013 (auditoria), ADR-0014 (CPF), ADR-0015 (enum vs. domínio).
 > orquestrador em 2026-09-04 e já refletidas em `docs/01-SPEC.md` e em `docs/04-DECISOES.md` (D8).
 > A marcação permanece como rastro de proveniência, não como pendência.
 
-### Duas pendências que o desenho precisa acomodar sem migração destrutiva
+### Correções posteriores à baseline, já refletidas neste documento
+
+| Registro | O que mudou |
+|---|---|
+| **D11 / ADR-0018** | Visibilidade resolvida **por página** em documento de conteúdo misto. Novas: `documentos.tem_paginas_mistas`, `documento_paginas.visibilidade`, `app.nivel_visivel`, `app.nivel_efetivo`, `app.pagina_visivel`, trigger `chunks_valida_visibilidade_uniforme` |
+| **D12** | Alerta "fundo sem ata" passa a se avaliar sobre `lancamentos.fundo`. **Removidas** `contas.fundo`, `contas.exige_deliberacao` e a conta de seed `2.12 Uso de fundos` |
+| **ADR-0017** | `cpf_enc` excluído por `GRANT SELECT` com lista de colunas. O `REVOKE SELECT (coluna)` que este documento trazia **não bloqueava nada** |
+| **D13 / ADR-0019** | **Invariante do piso:** `documentos.visibilidade` é no máximo tão permissiva quanto a página mais restritiva; override só amplia. Nova `app.ordem_visibilidade`; `tem_paginas_mistas` vira derivada; trava de chunk deixa de depender dela. Fecha V1 e V3 do `auditor-rls` |
+
+> As migrações de D11 e ADR-0017 já estão aplicadas. O diff de D12 está com o `eng-supabase`,
+> a aplicar depois do veredito do `auditor-rls` — este documento já reflete o estado final.
+
+### Pendências históricas (resolvidas)
+
+Registradas aqui na baseline e depois respondidas pela dona do projeto: recuperação de acesso da
+editora única (**D9** — códigos impressos guardados fora de casa, contenção operacional; `papeis`
+já suportava N editores sem migração) e profundidade do histórico (**D10** — condomínio entregue
+em dez/2025, nove meses de série; `tipos_alerta.requer_historico_meses` fez o motor se ajustar
+por dado, sem migração). O texto abaixo é mantido como registro do desenho que as acomodou.
 
 Ambas são decisão da dona do projeto, **fora do escopo do arquiteto**, e nenhuma delas muda o
 schema — é isso que as torna seguras de adiar:
@@ -231,8 +249,22 @@ $$;
 -- Nenhuma policy reescreve o predicado: todas chamam uma das duas ENTRADAS.
 -- ****************************************************************************
 
+-- ORDEM TOTAL DE PERMISSIVIDADE (ADR-0019). NÃO é a que os nomes sugerem:
+--   conselho (0, mais restritivo) < restrito (1) < autenticado (2) < publico (3)
+-- `restrito` é MAIS PERMISSIVO que `conselho` porque ACRESCENTA a unidade vinculada à gestão:
+--   audiência(conselho) = gestão  ⊆  audiência(restrito) = gestão ∪ unidades vinculadas.
+-- Inverter esses dois permitiria página 'conselho' dentro de documento 'restrito', e o arquivo —
+-- baixável pelos moradores da unidade — entregaria a página do conselho. Leak de uma linha, num
+-- ponto onde o nome do enum empurra ativamente para o erro.
+create or replace function app.ordem_visibilidade(n public.visibilidade_documento)
+returns int language sql immutable as $$
+  select case n when 'conselho' then 0 when 'restrito' then 1
+                when 'autenticado' then 2 when 'publico' then 3 end
+$$;
+
 -- Dado um nível já resolvido, este papel enxerga? NULL (página não classificada em documento
--- misto) cai no ELSE => false. FALHA FECHADO — é o ponto central do ADR-0018.
+-- misto) cai no ELSE => false. FALHA FECHADO — mantido por conservadorismo; desde o ADR-0019
+-- não é mais o que segura o modelo de pé (herdar o piso já é seguro).
 create or replace function app.nivel_visivel(p_nivel public.visibilidade_documento, p_documento_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
   select case p_nivel
@@ -313,6 +345,45 @@ to anon;
 > | `documentos`, `storage.objects` (bucket `documentos`) | `app.documento_visivel(id)` |
 > | `documento_paginas`, `chunks`, `deliberacoes` | `app.pagina_visivel(documento_id, pagina)` |
 
+### A INVARIANTE DO PISO (ADR-0019) — sem ela, tudo acima é ilusório
+
+```
+Para toda página p de um documento d:   ordem(d.visibilidade) <= ordem(p.visibilidade)
+```
+
+`documentos.visibilidade` é o **piso**: o arquivo é no mínimo tão restrito quanto sua página mais
+sensível. **Override de página só amplia o alcance do texto derivado; nunca o reduz.**
+
+Por que isto existe (achado **V3** do `auditor-rls`,
+`supabase/tests/01_visibilidade_documento_pagina_chunk_rls.sql`): num documento `publico` com uma
+página `conselho`, o texto da página era corretamente negado em `documento_paginas` e `chunks`
+**e o PDF inteiro era baixável por anônimo** — a policy do bucket faz o gate por
+`app.documento_visivel`. A granularidade foi resolvida no índice e esquecida no objeto original.
+Um PDF é atômico: quem o baixa leva tudo.
+
+`<=` e não `=`: documento mais restrito que todas as suas páginas é seguro (excesso de zelo) e fica
+permitido. Proibido é o documento mais permissivo que qualquer página sua.
+
+Triggers nas **duas** direções — validar só um lado deixa a porta aberta pelo outro:
+
+```sql
+-- documento_paginas BEFORE INSERT/UPDATE OF visibilidade:
+--   rejeita se ordem(NEW.visibilidade) < ordem(documento.visibilidade).
+--   Mensagem acionável: "baixe documentos.visibilidade para <nível> antes de marcar esta página".
+-- documentos BEFORE UPDATE OF visibilidade:
+--   rejeita se ordem(NEW.visibilidade) > min(ordem(pagina.visibilidade)) das páginas classificadas.
+```
+
+**Ordem de operações na importação:** para documento que já nasce misto, define-se primeiro o nível
+do documento (o piso), depois os overrides. O pipeline de F1 precisa seguir essa ordem, senão a
+primeira página classificada é rejeitada.
+
+**Quando o caso inverso aparecer** (balancete `autenticado` com página de inadimplência nominal que
+precisa ser `conselho`): baixa-se `documentos.visibilidade` para `conselho` e marcam-se as demais
+páginas como `autenticado`. Morador continua lendo, buscando e citando o corpo; o **PDF fica com a
+gestão**, porque o PDF de fato contém a página nominal. A UI precisa explicar isso, não só esconder
+o botão de download.
+
 ---
 
 ## 5. Identidade e cadastro
@@ -380,8 +451,23 @@ create table public.pessoas (
 create index pessoas_nome_trgm_idx on public.pessoas using gin (nome gin_trgm_ops);
 
 -- ADR-0012 item 7 / ADR-0014 item 4 — ÚNICA exceção de privilégio de coluna do schema.
--- RLS é por linha e não esconde coluna; cpf_enc sai do alcance de `authenticated` por GRANT.
-revoke select (cpf_enc) on public.pessoas from authenticated, anon;
+-- RLS é por linha e não esconde coluna.
+--
+-- ARMADILHA DE POSTGRES (ADR-0017 — o desenho anterior deste documento estava ERRADO e não
+-- bloqueava nada): `REVOKE SELECT (col) ON tabela FROM role` NÃO subtrai de um
+-- `GRANT SELECT ON tabela` — ACL de tabela e de coluna são UNIÃO, nunca subtração, em NENHUMA
+-- ordem. O comando não falha, não avisa e não tem efeito.
+-- A única forma real de excluir uma coluna é nunca conceder SELECT de tabela inteira:
+revoke all on public.pessoas from public, anon, authenticated;
+grant select (id, auth_user_id, nome, email, cpf_hash, cpf_ultimos_digitos, telefone, ativa,
+  observacoes, criado_em, criado_por, atualizado_em) on public.pessoas to authenticated;
+-- cpf_enc AUSENTE da lista, por construção.
+grant insert, update on public.pessoas to authenticated;  -- delete: ninguém (anonimização)
+-- INSERT/UPDATE de tabela inteira permanecem, inclusive cpf_enc: é a editor cifrando e gravando.
+-- Só a LEITURA de volta é vedada.
+-- CONSEQUÊNCIA: coluna nova em `pessoas` fica INVISÍVEL até ser incluída neste GRANT. Falha
+-- fechado — lado certo para falhar, mas toda migração que adicionar coluna aqui precisa
+-- atualizar a lista no mesmo arquivo.
 
 comment on table public.pessoas is
   'RLS: pessoa lê a PRÓPRIA linha; conselho lê todas SEM CPF; editor lê todas. Escrita só editor.
@@ -533,6 +619,22 @@ create table public.documentos (
   ocr_aplicado   boolean not null default false,
   status         public.status_documento not null default 'pendente',
   visibilidade   public.visibilidade_documento not null default 'autenticado',
+  -- [ADR-0018 / D11, revisada pelo ADR-0019 / D13] true quando o documento embute conteúdo de
+  -- nível de exposição diferente do padrão — ex.: a ata AGE de 36 páginas que embute o Regimento
+  -- Interno inteiro como anexo.
+  --
+  -- COLUNA DERIVADA, NÃO AUTORAL (achado V1 do auditor-rls): antes ela precisava ser marcada à
+  -- mão, e quando não era, o trigger de fronteira de chunk simplesmente não rodava e o chunk
+  -- vazava pela busca, sem login. Flag que precisa ser marcada à mão para uma trava de segurança
+  -- funcionar não é trava, é convenção. Agora é um LIMITE INFERIOR mantido por trigger:
+  --     tem_paginas_mistas >= exists(override em documento_paginas)
+  --   * trigger em documento_paginas LIGA a flag ao surgir o primeiro override;
+  --   * documentos não aceita DESLIGAR enquanto houver override;
+  --   * a editor ainda pode LIGAR antes de classificar ("sei que é misto, ainda não classifiquei").
+  --
+  -- A semântica de "não herda por omissão" continua, por conservadorismo — mas desde a invariante
+  -- do piso (ADR-0019) herdar o padrão do documento já é seguro, porque o padrão É o piso.
+  tem_paginas_mistas boolean not null default false,
   versao_pipeline int not null default 1,   -- idempotência do reprocessamento (SPEC §3)
   metadados      jsonb not null default '{}'::jsonb,  -- extração da classificação (SPEC §3.5)
   publicado_em   timestamptz,
@@ -552,6 +654,7 @@ create index documentos_competencia_idx   on public.documentos (competencia desc
 create index documentos_status_idx        on public.documentos (status);
 -- Índice que a RLS percorre (ADR-0012: policy sem índice vira varredura por linha):
 create index documentos_visibilidade_idx  on public.documentos (visibilidade, status);
+create index documentos_mistos_idx        on public.documentos (id) where tem_paginas_mistas;
 create index documentos_ano_idx           on public.documentos ((extract(year from coalesce(competencia, data_documento))));
 create index documentos_titulo_trgm_idx   on public.documentos using gin (titulo gin_trgm_ops);
 create index documentos_metadados_idx     on public.documentos using gin (metadados jsonb_path_ops);
@@ -621,6 +724,15 @@ create table public.documento_paginas (
                 check (fonte_texto in ('nativo','ocr','misto','vazio')),
   confianca_ocr numeric(4,3) check (confianca_ocr between 0 and 1),  -- não é dinheiro
   rotacao       int check (rotacao in (0,90,180,270)),
+  -- [ADR-0018 / D11] Override por página. NULL = herda documentos.visibilidade.
+  -- Preenchida = sobrescreve para ESTA página: as páginas do regimento embutido na ata ganham
+  -- 'publico' aqui, com a ata em 'autenticado'.
+  -- [ADR-0019 / D13] O override SÓ AMPLIA: ordem(esta) >= ordem(documento). Trigger rejeita
+  -- override mais restritivo que o documento — senão o texto ficaria negado na busca e o mesmo
+  -- texto sairia inteiro pelo download do PDF (achado V3). Para restringir de fato, baixe primeiro
+  -- documentos.visibilidade.
+  -- Toda a resolução vive em app.nivel_efetivo(); nenhuma policy a reescreve.
+  visibilidade  public.visibilidade_documento,
   versao_pipeline int not null default 1,
   criado_em     timestamptz not null default now(),
   constraint documento_paginas_uk unique (documento_id, pagina)
@@ -628,7 +740,8 @@ create table public.documento_paginas (
 create index documento_paginas_documento_idx on public.documento_paginas (documento_id);
 
 comment on table public.documento_paginas is
-  'RLS: ESPELHA documentos — select apenas se app.documento_visivel(documento_id).
+  'RLS: ESPELHA documentos via app.pagina_visivel(documento_id, pagina) — resolve override e
+   herança de visibilidade por página (ADR-0018, D11).
    Por quê: ARMADILHA Nº1 (SPEC §7, §8.1). Esta tabela contém o texto integral do documento; RLS
    em documentos sem RLS aqui entrega o conteúdo restrito inteiro por uma consulta trivial.
    Escrita: NENHUM papel de usuário. Só o worker, por service_role — é saída de máquina.';
@@ -636,10 +749,14 @@ comment on table public.documento_paginas is
 
 ```
 -- RLS — documento_paginas
---   select : app.documento_visivel(documento_id)
+--   select : app.pagina_visivel(documento_id, pagina)   <-- entrada POR PÁGINA, não documento_visivel
 --   insert/update/delete : nenhuma policy (worker usa service_role, que contorna RLS por
 --                          construção — ADR-0012 item 6)
--- Teste pgTAP obrigatório: morador NÃO lê página de documento visibilidade='conselho'.
+-- Testes pgTAP obrigatórios:
+--   1. morador NÃO lê página de documento visibilidade='conselho'
+--   2. anon LÊ a página do regimento embutido (override 'publico') numa ata 'autenticado'
+--   3. anon NÃO lê a página seguinte, da ata, no MESMO documento
+--   4. em documento tem_paginas_mistas, página com visibilidade NULL não é lida por não-gestão
 ```
 
 ### 6.5 `chunks` — F1 · **espelha `documentos` — o ponto mais crítico do schema**
@@ -671,19 +788,43 @@ create index chunks_texto_trgm_idx on public.chunks using gin (texto gin_trgm_op
 --   using hnsw (embedding extensions.vector_cosine_ops) with (m = 16, ef_construction = 64);
 
 comment on table public.chunks is
-  'RLS: ESPELHA documentos — select apenas se app.documento_visivel(documento_id).
+  'RLS: ESPELHA documentos via app.pagina_visivel(documento_id, pagina_ini) — a página inicial do
+   trecho é a âncora de visibilidade (ADR-0018, D11).
    Por quê: ESTA É A ARMADILHA Nº1 (SPEC §7, §8.1, Risco §8.1). A busca lê chunks. RLS em
    documentos sem RLS aqui faz o motor de busca vazar trecho de documento restrito para qualquer
    morador — e vaza pela funcionalidade central do produto, com o texto já destacado.
-   A policy DEVE chamar app.documento_visivel(), nunca reescrever o predicado.
+   A policy DEVE chamar app.pagina_visivel(), nunca reescrever o predicado.
    Escrita: nenhum papel de usuário; só o worker via service_role.';
 comment on column public.chunks.pagina_ini is
-  'A citação depende disto (SPEC §3.4, §6.2): resultado de busca leva a "abrir na página X".';
+  'A citação depende disto (SPEC §3.4, §6.2): resultado de busca leva a "abrir na página X".
+   Desde a correção de 2026-09-04 (ADR-0018) é também a âncora de visibilidade do chunk.';
+```
+
+**Trigger obrigatório — `chunks_valida_visibilidade_uniforme`** (ADR-0018):
+
+```sql
+-- [ADR-0019, achado V1] A verificação roda SEMPRE QUE EXISTIR OVERRIDE no intervalo do chunk —
+-- não "quando tem_paginas_mistas = true". A flag é índice para pular a checagem no caso comum,
+-- nunca a condição que decide se a segurança se aplica. Foi exatamente isso que o V1 derrubou.
+-- Regra: um chunk só é aceito se TODAS as páginas do intervalo [pagina_ini, pagina_fim]
+-- estiverem classificadas E com o MESMO nível.
+-- Por quê: o chunk herda visibilidade pela pagina_ini — UMA borda do intervalo. Sem esta trava,
+-- um chunk que começa na última página do regimento (público) e termina na primeira da ata
+-- (autenticado) publicaria o texto da ata.
+-- E isso não é caso raro: o chunking tem ~15% de overlap (SPEC §3.4) e atravessa fronteira de
+-- página POR CONSTRUÇÃO — sem a trava, o vazamento seria o padrão, não a exceção.
+-- Documento não-misto não paga este custo (a função retorna cedo).
+create trigger chunks_valida_visibilidade_uniforme
+  before insert or update of documento_id, pagina_ini, pagina_fim on public.chunks
+  for each row execute function public.tg_chunks_valida_visibilidade_uniforme();
+-- CONSEQUÊNCIA PARA O PIPELINE (F1): o chunker precisa respeitar fronteira de visibilidade ao
+-- segmentar documento misto. Se não respeitar, o trigger rejeita e o documento não indexa.
+-- É requisito do pipeline, não detalhe de banco.
 ```
 
 ```
 -- RLS — chunks
---   select : app.documento_visivel(documento_id)
+--   select : app.pagina_visivel(documento_id, pagina_ini)
 --   insert/update/delete : nenhuma policy
 -- Teste pgTAP obrigatório (auditor-rls), no mínimo:
 --   1. anon NÃO lê chunk de documento 'autenticado'
@@ -691,8 +832,11 @@ comment on column public.chunks.pagina_ini is
 --   3. morador NÃO lê chunk de documento com status <> 'publicado'
 --   4. morador de OUTRA unidade NÃO lê chunk de documento 'restrito'
 --   5. conselho LÊ chunk de documento 'conselho'
--- Se app.documento_visivel() virar gargalo: desnormalizar visibilidade para chunks com
--- TRIGGER de sincronização a partir de documentos. NUNCA duplicar o predicado à mão.
+--   6. [ADR-0018] anon LÊ chunk das páginas do regimento embutido numa ata 'autenticado'
+--   7. [ADR-0018] anon NÃO lê chunk das páginas da ata no MESMO documento
+--   8. [ADR-0018] chunk cruzando fronteira de visibilidade é REJEITADO na inserção
+-- Se app.pagina_visivel() virar gargalo: desnormalizar visibilidade para chunks com
+-- TRIGGER de sincronização a partir de documentos/documento_paginas. NUNCA duplicar o predicado.
 ```
 
 ---
@@ -751,10 +895,11 @@ create table public.deliberacoes (
 create index deliberacoes_documento_idx on public.deliberacoes (documento_id);
 
 comment on table public.deliberacoes is
-  'RLS: select se app.documento_visivel(documento_id) OU documento_id is null e autenticado;
+  'RLS: select se app.pagina_visivel(documento_id, pagina) OU documento_id is null e autenticado;
    escrita só editor.
-   Por quê: a deliberação carrega trecho literal da ata — se a ata é restrita, o trecho é restrito.
-   Mesma lógica de espelhamento de chunks, por isso a mesma função.';
+   Por quê: a deliberação carrega trecho literal da ata — se a página citada é restrita, o trecho
+   é restrito. Mesma lógica de espelhamento de chunks, por isso a mesma entrada por página
+   (ADR-0018): numa ata mista, a deliberação está na parte autenticada, não na parte pública.';
 comment on column public.deliberacoes.chunk_id is
   '[ADR-0016 item 1, aprovado em D8] SPEC §2 ancorava a citação em chunk_id. Chunk é derivado e
    volátil: SPEC §3 exige reprocessamento idempotente, que regenera a segmentação. Âncora estável
@@ -781,10 +926,16 @@ create table public.contas (
   nivel            int not null check (nivel between 1 and 3),
   conta_pai_id     uuid references public.contas(id) on delete restrict,
   aceita_lancamento boolean not null default false,   -- só folha (nível 3) recebe lançamento
-  fundo            public.fundo not null default 'nenhum',
-  -- Débito em conta de fundo exige deliberação (condominio-plano-de-contas §4; alerta crítico
-  -- "fundo de reserva sem ata", SPEC §5.3).
-  exige_deliberacao boolean not null default false,
+  -- [D12 — REMOVIDAS] `contas.fundo` e `contas.exige_deliberacao` saem do modelo.
+  -- Fundo é atributo do FATO (o lançamento), não natureza da conta: qualquer despesa pode ser
+  -- paga com fundo de reserva — uma bomba emergencial tanto quanto uma obra planejada. Amarrar a
+  -- regra a um conjunto fechado de contas produz FALSO NEGATIVO SILENCIOSO: o alerta não dispara
+  -- para o gasto que ninguém previu, que é exatamente o que mais interessa fiscalizar.
+  -- A conta sintética "2.12 Uso de fundos", criada no seed só para o alerta funcionar, sai junto:
+  -- uso de fundo é a despesa finalística de sempre (2.3.x hidráulica, 2.4.x elevador, 2.10.x
+  -- obra) com a origem do recurso marcada em `lancamentos.fundo`. Preserva "o quê" foi comprado
+  -- e "de onde" saiu o dinheiro, sem duplicar valor no resultado nem divergir do balancete da
+  -- administradora (docs/dominio/plano-de-contas-decisoes.md).
   -- ESPELHAMENTO 1:1 do plano da administradora. Divergir destrói comparabilidade
   -- (condominio-plano-de-contas §8). Nunca "corrigir" o nome dela.
   codigo_administradora text,
@@ -792,8 +943,8 @@ create table public.contas (
   ativa            boolean not null default true,
   criado_em        timestamptz not null default now(),
   constraint contas_raiz_ck  check ((nivel = 1) = (conta_pai_id is null)),
-  constraint contas_folha_ck check (not aceita_lancamento or nivel = 3),
-  constraint contas_fundo_ck check (not exige_deliberacao or fundo <> 'nenhum')
+  constraint contas_folha_ck check (not aceita_lancamento or nivel = 3)
+  -- [D12] `contas_fundo_ck` removida junto com as colunas que ela validava.
 );
 create index contas_pai_idx    on public.contas (conta_pai_id);
 create index contas_codigo_idx on public.contas (codigo text_pattern_ops);  -- prefixo '2.04.%'
@@ -805,7 +956,9 @@ comment on table public.contas is
    Por quê: o plano de contas é o vocabulário do painel financeiro — o morador precisa ler para
    entender "para onde foi o dinheiro" (SPEC §6.4). Não contém PII. A escrita é sensível por
    outro motivo: renomear ou reclassificar conta reescreve o significado da série histórica.
-   Mudança de plano é EVENTO REGISTRADO (auditado), não edição silenciosa.';
+   Mudança de plano é EVENTO REGISTRADO (auditado), não edição silenciosa.
+   [D12] Esta tabela NÃO carrega regra de fiscalização. Nenhum alerta se avalia sobre atributo de
+   conta — ver o padrão geral registrado em docs/04-DECISOES.md D12.';
 ```
 
 ### 8.2 `fornecedores` e `fornecedor_dados_bancarios` — F2 · **[ADR-0016 item 8]**
@@ -830,7 +983,12 @@ create table public.fornecedores (
   constraint fornecedores_doc_ck check (cnpj is not null or cpf_hash is not null)
 );
 create index fornecedores_razao_trgm_idx on public.fornecedores using gin (razao_social gin_trgm_ops);
-revoke select (cpf_enc) on public.fornecedores from authenticated, anon;
+-- Mesma armadilha, mesma solução (ADR-0017): GRANT coluna a coluna, sem cpf_enc.
+revoke all on public.fornecedores from public, anon, authenticated;
+grant select (id, cnpj, cpf_hash, razao_social, nome_fantasia, categoria,
+  eh_sindico_terceirizado, eh_administradora, ativo, criado_em, criado_por)
+  on public.fornecedores to authenticated;
+grant insert, update, delete on public.fornecedores to authenticated;
 
 comment on table public.fornecedores is
   'RLS: leitura para autenticado (razão social e CNPJ de quem o condomínio paga é informação de
@@ -929,6 +1087,9 @@ create table public.lancamentos (
   historico        text not null check (length(btrim(historico)) >= 3),
   valor_centavos   bigint not null check (valor_centavos <> 0),   -- ADR-0010
   tipo             public.tipo_lancamento not null,
+  -- [D12] Origem do recurso — atributo do FATO, ortogonal a conta_id ("o quê" foi comprado vs.
+  -- "de onde" saiu o dinheiro). É sobre esta coluna que o alerta crítico "fundo sem ata" se
+  -- avalia, nunca sobre atributo da conta. Ver docs/04-DECISOES.md D12.
   fundo            public.fundo not null default 'nenhum',
 
   -- SPEC §5.1.4: "todo lançamento nasce com documento_id + pagina_origem. Sem fonte, não existe."
@@ -983,10 +1144,15 @@ create index lancamentos_fundo_idx             on public.lancamentos (fundo, dat
 --    rejeita competência com periodos_fechados.reaberto_em IS NULL (SPEC §5.4).
 --    Vale também para o estorno.
 
--- 4) lancamentos_exige_deliberacao — BEFORE INSERT:
---    se contas.exige_deliberacao e tipo='despesa' e deliberacao_id is null
---    -> NÃO bloqueia; gera alerta crítico (SPEC §5.3). Sinalizar, não bloquear silenciosamente
---    (condominio-plano-de-contas §4). A trava dura aqui produziria contorno criativo.
+-- 4) [D12 — REESCRITO] Alerta "fundo sem ata" avaliado sobre o FATO, não sobre a conta:
+--       new.fundo <> 'nenhum' AND new.tipo = 'despesa' AND new.deliberacao_id IS NULL
+--    Independente de conta_id. Índice já existe (lancamentos_fundo_idx).
+--    NÃO bloqueia: gera alerta crítico (SPEC §5.3). Sinalizar, não bloquear silenciosamente
+--    (condominio-plano-de-contas §4) — trava dura aqui produziria contorno criativo.
+--    A versão anterior lia contas.exige_deliberacao e tinha falso negativo silencioso:
+--    bastava lançar numa conta não marcada para o alerta nunca disparar.
+--    Aporte AO fundo (entrada) é normal e não exige ata; o que exige é a SAÍDA — por isso
+--    tipo = 'despesa' faz parte do predicado.
 ```
 
 ```sql
@@ -1149,7 +1315,17 @@ create table public.tipos_alerta (
 -- Seed: as 10 regras da tabela do SPEC §5.3. Os LIMIARES vivem em `configuracoes`,
 -- não em código e não aqui (SPEC §5.3, última linha).
 -- requer_historico_meses no seed: variacao_atipica = 6; fracionamento_suspeito = 3;
--- as demais = 0 (avaliáveis desde o primeiro balancete).
+-- as demais = 0 (avaliáveis desde o primeiro balancete). Com o condomínio entregue em dez/2025
+-- (D10), as duas já são avaliáveis — o motor compara contra a série REALMENTE disponível.
+--
+-- [D12] Toda regra deste seed se avalia sobre ATRIBUTO DO FATO, nunca sobre metadado de cadastro
+-- que o operador controla. Fiscalização que depende de alguém ter marcado a caixinha certa antes
+-- não é fiscalização — quem quer escapar não marca. Em particular:
+--   fundo_sem_ata          -> lancamentos.fundo <> 'nenhum' AND tipo='despesa'
+--                             AND deliberacao_id IS NULL   (NÃO contas.exige_deliberacao)
+--   despesa_sem_comprovante-> ausência de lancamento_anexos (NÃO flag "exige comprovante")
+--   cotacao_ausente        -> valor_centavos > limiar AND count(anexo tipo='cotacao') < 2
+--                             (NÃO marcação de "conta que exige cotação")
 
 create table public.alertas (
   id            uuid primary key default gen_random_uuid(),
@@ -1405,6 +1581,15 @@ create index acesso_recurso_idx on audit.acesso (recurso, ts desc);
 -- RLS em storage.objects — o eng-supabase materializa; a intenção é:
 --   bucket 'documentos':         select se exists(documentos d where d.storage_path = name
 --                                                 and app.documento_visivel(d.id))
+--                                <- ENTRADA DE DOCUMENTO, de propósito (ADR-0018): o PDF cru não
+--                                é fatiado por página. Anônimo não baixa a ata de 36 páginas
+--                                porque 12 delas são públicas. A granularidade por página vale
+--                                para texto extraído, busca e citação — não para o arquivo.
+--                                [ADR-0019] Este gate está CORRETO porque a invariante do piso
+--                                garante que documentos.visibilidade é o nível do conteúdo mais
+--                                sensível do arquivo. Sem a invariante, esta policy liberava PDF
+--                                com página restrita dentro (V3). Nada mudou na policy; mudou a
+--                                garantia por trás dela.
 --   bucket 'anexos-financeiros': select se app.eh_gestao()
 --   bucket 'publicos':           select para todos
 --   insert/update/delete em todos: nenhum papel de usuário — upload é por signed upload URL
@@ -1450,10 +1635,10 @@ de autorização (ADR-0012, alternativa descartada).
 | `tipos_documento` | ler | ler | ler | ler | editor |
 | `documentos` | `documento_visivel` | `documento_visivel` | tudo | tudo | editor |
 | `documento_unidades` | — | própria unidade | todos | todos | editor |
-| `documento_paginas` | **espelha `documentos`** | **espelha** | **espelha** | **espelha** | — (worker) |
-| `chunks` | **espelha `documentos`** | **espelha** | **espelha** | **espelha** | — (worker) |
+| `documento_paginas` | **`pagina_visivel`** | **`pagina_visivel`** | **`pagina_visivel`** | **`pagina_visivel`** | — (worker) |
+| `chunks` | **`pagina_visivel`** (via `pagina_ini`) | **idem** | **idem** | **idem** | — (worker) |
 | `assembleias` | — | ler | ler | ler | editor |
-| `deliberacoes` | `documento_visivel` | `documento_visivel` | tudo | tudo | editor |
+| `deliberacoes` | `pagina_visivel` | `pagina_visivel` | tudo | tudo | editor |
 | `contas` | — | ler | ler | ler | editor |
 | `fornecedores` | — | ler (sem `cpf_enc`) | ler | ler | editor |
 | `fornecedor_dados_bancarios` | — | — | ler | ler | editor |
@@ -1484,7 +1669,9 @@ Ordem de criação na baseline — respeitar, porque há dependência de FK e de
 4. `unidades`, `pessoas`, `vinculos`, `papeis`
 5. funções `app.*` (dependem de `pessoas`, `papeis`, `vinculos`)
 6. `tipos_documento`, `documentos`, `documento_unidades`, `documento_paginas`, `chunks`
-7. `app.documento_visivel()` (depende de `documentos` e `documento_unidades`)
+7. `app.nivel_visivel()`, `app.nivel_efetivo()`, `app.documento_visivel()`, `app.pagina_visivel()`
+   e o trigger `chunks_valida_visibilidade_uniforme` (dependem de `documentos`,
+   `documento_paginas` e `documento_unidades`)
 8. `assembleias`, `deliberacoes`
 9. `contas`, `fornecedores`, `fornecedor_dados_bancarios`, `contratos`, `periodos_fechados`
 10. `lancamentos` (+ 4 triggers), `lancamento_anexos`, `orcamento`, `cobrancas`
@@ -1506,7 +1693,24 @@ Verificações que precisam passar antes de considerar a baseline pronta:
 - [ ] `app`, `audit` e `job` ausentes de `db.exposed_schemas` no `config.toml`
 - [ ] `update`/`delete` em `lancamentos` falha **inclusive com `service_role`**
 - [ ] `update`/`delete` em `audit.log` falha **inclusive com `service_role`**
-- [ ] `select cpf_enc` como `authenticated` falha por privilégio de coluna
+- [ ] `select cpf_enc` como `authenticated` falha por privilégio de coluna — e o `GRANT` de
+      `pessoas`/`fornecedores` é lista explícita, **sem** nenhum `grant select on <tabela>` nem
+      `revoke select (coluna)` (ADR-0017; `revoke` de coluna não faz efeito e dá falsa segurança)
+- [ ] `anon` lê a página com override `publico` dentro de documento `autenticado`, e **não** lê a
+      página seguinte do mesmo documento (ADR-0018)
+- [ ] em documento `tem_paginas_mistas`, página com `visibilidade` NULL não é lida por não-gestão
+- [ ] `insert` de chunk cruzando fronteira de visibilidade é rejeitado pelo trigger — **e é
+      rejeitado também com `tem_paginas_mistas = false`**, se houver override no intervalo (V1)
+- [ ] override de página mais restritivo que o documento é **rejeitado** (V3, invariante do piso)
+- [ ] afrouxar `documentos.visibilidade` acima de uma página já classificada é **rejeitado**
+- [ ] `tem_paginas_mistas` liga sozinha ao surgir o primeiro override, e não pode ser desligada
+      enquanto houver override
+- [ ] `app.ordem_visibilidade` bate com a audiência real: para cada par de níveis, quem enxerga o
+      mais restritivo é subconjunto de quem enxerga o mais permissivo — em especial
+      `conselho ⊂ restrito` (o nome engana)
+- [ ] não existe documento baixável por um papel que não possa ler alguma de suas páginas
+- [ ] nenhuma policy de `documento_paginas`, `chunks` ou `deliberacoes` chama
+      `app.documento_visivel` (entrada errada — ver tabela normativa da §4)
 - [ ] `insert` de documento tipo `ata_assembleia` com `visibilidade = 'publico'` é rejeitado
 - [ ] coluna gerada `chunks.tsv` compila (prova que a config `pt_br` está qualificada)
 - [ ] `insert` de estorno com valor diferente de `-original` é rejeitado

@@ -123,3 +123,109 @@ tempo é perda total do acesso de escrita; o acervo continua legível pelos dema
    assembleia. O leitor de documentos precisa distinguir texto original de registro e alteração
    posterior deliberada — não é detalhe cosmético, é o que diz qual regra vale hoje.
 5. Não há prestação de contas anual aprovada ainda. O primeiro exercício fecha em dez/2026.
+
+**D11 — Visibilidade é resolvida por página, não só por documento.** A sonda do acervo real
+(`docs/inventario-acervo.md`) achou uma **ata de assembleia de 36 páginas que embute o Regimento
+Interno inteiro como anexo**. Um `documento_id`, dois níveis de exposição legítimos ao mesmo
+tempo: o regimento é normativo e impessoal (deveria ser público); a ata traz nome, unidade e voto
+(exige autenticação). *Este caso concreto é o registro mais importante desta entrada* — com
+visibilidade só no documento, as duas saídas eram ruins: marcar público **vaza nomes pela busca**,
+marcar autenticado **esconde o regimento**, que é exatamente o documento que o produto existe para
+tornar consultável. Não é caso exótico: ata que anexa regimento, convenção ou orçamento é prática
+comum de cartório e administradora.
+
+*Modelo adotado (ADR-0018, adendo ao ADR-0012):* `documentos.tem_paginas_mistas` +
+`documento_paginas.visibilidade` (override nullable), com duas entradas de RLS —
+`app.documento_visivel(id)` para linha e arquivo, `app.pagina_visivel(documento_id, pagina)` para
+`documento_paginas`, `chunks` (via `pagina_ini`) e `deliberacoes`. Os helpers `app.nivel_visivel`
+e `app.nivel_efetivo` preservam a regra de **uma função só**: o motivo do ADR-0012 não muda, muda
+o que a função recebe.
+
+*Consequências:* (a) **página sem classificação em documento misto nega por padrão** — se
+herdasse, esquecer de classificar viraria publicação indevida; (b) **chunk não pode cruzar
+fronteira de visibilidade** (trigger `chunks_valida_visibilidade_uniforme`), porque o chunking tem
+~15% de overlap e atravessa página por construção — sem a trava, o vazamento seria o padrão, não a
+exceção, e o chunker de F1 precisa respeitar a fronteira ou o documento não indexa; (c) o **PDF
+cru continua não fatiado** — anônimo não baixa a ata porque 12 páginas são públicas; (d) curadoria
+ganha um passo no documento misto, e a heurística pode **propor** a fronteira, nunca aplicá-la
+sozinha; (e) risco novo: usar a entrada errada reabre a armadilha nº1 numa forma mais sutil — a
+tabela normativa de qual entrada usar está em `docs/schema.md` §4 e o `auditor-rls` testa as duas.
+
+*Por que não fatiar o PDF em dois documentos* — é o que alguém vai propor de novo: quebra o
+`sha256` como identidade do arquivo recebido e o dedupe do SPEC §3.1; o documento registrado em
+cartório é **um**, e publicar um recorte como se fosse o original destrói a proveniência, que é a
+tese do produto; e a citação por página deixa de bater com o PDF que a pessoa tem na mão.
+
+**D12 — Regra de fiscalização se avalia sobre o atributo do fato, nunca sobre a classificação de
+quem cadastrou a conta.** Erro de modelagem corrigido, não de redação. O alerta crítico "fundo de
+reserva sem ata" (SPEC §5.3) estava apoiado em `contas.exige_deliberacao` — flag fixa na conta.
+O `guardiao-dominio` mostrou que está errado: **qualquer despesa pode ser paga com fundo de
+reserva**, uma bomba queimada em emergência tanto quanto uma obra planejada. Amarrar a regra a um
+conjunto fechado de contas produz **falso negativo silencioso** — o alerta não dispara justamente
+para o gasto que ninguém previu, que é o que mais interessa fiscalizar.
+
+*Regra correta:* `lancamentos.fundo <> 'nenhum' AND tipo = 'despesa' AND deliberacao_id IS NULL`,
+independente da conta debitada (índice `lancamentos_fundo_idx` já existe). Aporte **ao** fundo é
+normal e não exige ata; o que exige é a **saída**.
+
+*Consequência:* saem do modelo `contas.fundo`, `contas.exige_deliberacao` e a conta sintética
+**`2.12 Uso de fundos`**, que o `eng-supabase` precisou inventar no seed só para o alerta
+funcionar. Uso de fundo é a despesa finalística de sempre (2.3.x hidráulica, 2.4.x elevador,
+2.10.x obra) com a origem do recurso marcada no lançamento — preserva "o quê" foi comprado e "de
+onde" saiu o dinheiro, sem duplicar valor no resultado nem divergir do balancete da administradora
+(skill `condominio-plano-de-contas` §8, alerta de espelhamento).
+
+*O padrão geral, porque vai reaparecer:* **fiscalização que depende de alguém ter marcado a
+caixinha certa antes não é fiscalização** — quem quer escapar não marca. Toda regra de alerta se
+avalia sobre atributo do fato registrado (o lançamento, o anexo, o contrato), nunca sobre metadado
+de cadastro que o operador controla. Vale para os outros alertas do §5.3: "despesa sem
+comprovante" olha a ausência de anexo, não uma flag "exige comprovante" na conta; "cotação
+ausente" olha o valor do lançamento contra o limiar, não uma marcação de "conta que exige
+cotação". Raciocínio completo em `docs/dominio/plano-de-contas-decisoes.md`.
+
+*Nota de escopo:* as migrações de D12 são do `eng-supabase`, a aplicar depois do veredito do
+`auditor-rls`. `docs/01-SPEC.md` §2 e §5.3 e `docs/schema.md` já refletem o estado final.
+
+**D13 — A visibilidade do documento é o piso; override de página só amplia.** Emenda à D11, saída
+do veredito BLOQUEADO do `auditor-rls` (achado **V3**). A D11 resolveu a granularidade **no
+índice** e esqueceu que **o objeto original continua monolítico**: num documento `publico` com uma
+página `conselho`, o texto da página era corretamente negado em `documento_paginas` e `chunks`
+**e o PDF inteiro era baixável por anônimo**, porque a policy do bucket faz o gate pelo nível do
+documento. Restrição por página é ilusória enquanto o arquivo é baixável — e isso é pior que não
+ter a funcionalidade, porque dá sensação de controle.
+
+*Decisão:* invariante `ordem(documentos.visibilidade) <= ordem(cada página sua)`, garantida por
+trigger nas duas direções (ao classificar página e ao afrouxar documento). Override de página
+**só amplia** o alcance do texto derivado; para restringir de fato, baixa-se o documento.
+A ordem de permissividade é `conselho < restrito < autenticado < publico` — **`restrito` é mais
+permissivo que `conselho`**, porque acrescenta a unidade vinculada à gestão. O nome engana, e
+inverter os dois deixaria uma página de conselho sair pelo arquivo baixável por uma unidade.
+
+*Duas coisas que a discussão esclareceu e vale registrar:* (1) as opções "derivar
+`documentos.visibilidade` como mínimo das páginas" e "proibir override mais restritivo" impõem
+**a mesma invariante** — a escolha foi pela segunda por ser declarativa e falhar alto, em vez de
+sobrescrever a decisão da curadoria em silêncio; (2) **a D11 nunca ganhou nada no arquivo**. A ata
+AGE já era `autenticado` e continua; o que a D11 entregou — regimento embutido público na busca,
+na leitura e na citação — está intacto. Não havia trade-off a lamentar; havia um bug.
+
+*Quando aparecer o caso inverso* (balancete `autenticado` com página de inadimplência nominal que
+precisa ser `conselho` — não existe no acervo hoje, conferido nos 43 documentos, mas é plausível):
+desce-se o documento para `conselho` e ampliam-se as demais páginas para `autenticado`. O morador
+continua lendo, buscando e citando o corpo; o PDF fica com a gestão, porque o PDF de fato contém a
+página nominal. A UI precisa **explicar**, não só esconder o botão de download.
+
+*Consequência ligada ao achado **V1**:* `tem_paginas_mistas` era autoral e não obrigatória quando
+havia override — e sem ela o trigger de fronteira de chunk não rodava, vazando chunk pela busca
+sem login. Passa a ser **derivada** (ligada por trigger ao surgir o primeiro override, não
+desligável enquanto houver override, ainda ligável antecipadamente pela `editor` para declarar
+intenção), e a trava de chunk deixa de depender dela: roda sempre que houver override no intervalo.
+**Flag que precisa ser marcada à mão para uma trava funcionar não é trava, é convenção** — mesma
+lição da D12, em outro lugar. Efeito colateral bom: com a invariante do piso, herdar o padrão do
+documento passa a ser seguro por construção, e a regra "não herda por omissão" deixa de ser o que
+segura o modelo de pé (fica mantida por conservadorismo).
+
+*Pendência de nomenclatura para o `guardiao-dominio`:* `restrito` ser mais permissivo que
+`conselho` é armadilha de leitura permanente. Não é do arquiteto renomear valor de domínio, e é
+enum — exige migração.
+
+*Escopo:* ADR-0019. Implementação com o `eng-supabase`, junto com V1, V2 e V4–V7.
