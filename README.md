@@ -53,11 +53,29 @@ aplicada via `supabase db push` no CI. Tipos TS gerados no CI.
 ## CI/CD
 
 `.github/workflows/ci.yml` roda, nesta ordem, em todo PR e push em `main`: lint → typecheck →
-testes unitários (Vitest) → testes de RLS (pgTAP, `supabase/tests/`) → `supabase db push` (só em
-`main`, e só se tudo acima passar). Nenhum deploy passa com teste de RLS vermelho.
+testes unitários (Vitest) → testes de a11y (Playwright + axe) → testes de RLS (pgTAP,
+`supabase/tests/`, aprovados na auditoria de F0 — `docs/auditoria/veredito-f0.md`) →
+`supabase db push` (só em `main`, e só se tudo acima passar). Nenhum deploy passa com qualquer
+etapa vermelha.
+
+**Gate de merge.** Os cinco primeiros jobs formam uma cadeia via `needs`; se um falhar, os
+seguintes ficam `skipped` — e o GitHub trata `skipped` como requisito satisfeito em branch
+protection por padrão, o que abriria um jeito de mergear com CI quebrado. Por isso existe o job
+`ci-gate`: roda sempre (`if: always()`), inspeciona o resultado de cada job da cadeia e falha de
+verdade se qualquer um não foi `success`. **É `ci-gate` — e só ele — que deve ser marcado como
+"required status check"** quando este repositório ganhar um remoto no GitHub (branch protection
+de `main`). Pendência registrada em `docs/ops/divida-tecnica.md`; enquanto não houver remoto,
+não há como configurar branch protection de verdade — o gate roda e falha corretamente hoje, mas
+"barrar o merge" no sentido do GitHub só existe depois desse passo manual.
 
 `.github/workflows/backup.yml` roda `scripts/backup.sh` semanalmente — ver
 `docs/ops/backup.md` e `docs/ops/runbook-restauracao.md`.
+
+## Dívida técnica
+
+`docs/ops/divida-tecnica.md` rastreia os itens que a auditoria de RLS de F0 deixou "fora de
+cobertura" ou como observação com dono, um por agente responsável, para não evaporarem depois
+que a fase fechar.
 
 ## Custo
 

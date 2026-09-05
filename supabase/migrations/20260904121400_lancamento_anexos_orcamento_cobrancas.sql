@@ -31,7 +31,7 @@ comment on table public.lancamento_anexos is
 
 alter table public.lancamento_anexos enable row level security;
 alter table public.lancamento_anexos force row level security;
-revoke all on public.lancamento_anexos from public, anon, authenticated;
+revoke all on public.lancamento_anexos from public, anon, authenticated, service_role;
 grant select on public.lancamento_anexos to authenticated;
 grant insert, update, delete on public.lancamento_anexos to authenticated;
 
@@ -66,7 +66,7 @@ comment on table public.orcamento is
 
 alter table public.orcamento enable row level security;
 alter table public.orcamento force row level security;
-revoke all on public.orcamento from public, anon, authenticated;
+revoke all on public.orcamento from public, anon, authenticated, service_role;
 grant select on public.orcamento to authenticated;
 grant insert, update, delete on public.orcamento to authenticated;
 
@@ -114,7 +114,7 @@ comment on table public.cobrancas is
 
 alter table public.cobrancas enable row level security;
 alter table public.cobrancas force row level security;
-revoke all on public.cobrancas from public, anon, authenticated;
+revoke all on public.cobrancas from public, anon, authenticated, service_role;
 grant select on public.cobrancas to authenticated;
 grant insert, update on public.cobrancas to authenticated; -- delete: ninguém (cancelar por status)
 

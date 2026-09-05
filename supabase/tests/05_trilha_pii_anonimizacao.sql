@@ -9,7 +9,7 @@
 -- `rollback` — nada fica no banco.
 -- ============================================================================
 begin;
-select plan(8);
+select plan(13);
 
 -- ---------------------------------------------------------------- fixture --
 -- Marca o topo da cadeia ANTES da fixture: os asserts abaixo olham so as linhas que ESTE teste
@@ -45,28 +45,92 @@ select ok( (select actor_papel from audit.log order by seq desc limit 1) is null
   'A4 audit.log.actor_papel so contem valor do enum public.papel, nunca identidade');
 
 -- ======================================================================
--- B. PII denormalizada no SNAPSHOT — o ponto que a anonimizacao nao alcanca
+-- B. Redacao por ALLOWLIST (V9) — a invariante que o parecer juridico fixou
 -- ======================================================================
--- fn_registrar grava to_jsonb(NEW)/to_jsonb(OLD) inteiro e redige SO cpf_enc. Todo o resto do
--- cadastro pessoal entra em claro, permanente e encadeado. Anonimizar `pessoas` depois nao
--- alcanca estas linhas, e corrigi-las quebra a cadeia — a escolha e irreversivel por construcao.
+-- Parecer docs/juridico/pareceres/2026-09-04-cpf-hash-na-trilha.md: nome/email/telefone ficam EM
+-- CLARO (nome ja e permanente em ata por exigencia legal; email/telefone provam desvio de magic
+-- link — Risco nº6). cpf_hash/cpf_enc/cpf_ultimos_digitos/observacoes sao REDIGIDOS: o CPF nao
+-- existe em nenhum outro lugar permanente do acervo, e cpf_hash e pseudonimizacao reversivel com
+-- o pepper. audit.log e permanente e encadeado — redacao e na escrita ou nunca.
 select is(
-  (select coalesce(string_agg(k,',' order by k),'(nenhuma)')
-     from audit.log l, lateral (select unnest(array['nome','email','telefone','observacoes','cpf_ultimos_digitos']) k) c
-    where l.seq > (select seq from _base) and l.tabela='pessoas' and l.depois ? c.k
-      and l.depois->>c.k is not null and l.depois->>c.k <> '[redigido]'),
-  '(nenhuma)',
-  'B1 o snapshot de pessoas na trilha nao guarda nome/email/telefone/observacoes/cpf_ultimos_digitos em claro');
+  (select string_agg(kv.key, ',' order by kv.key)
+     from audit.log l, jsonb_each(l.depois) kv
+    where l.seq > (select seq from _base) and l.tabela='pessoas'
+      and jsonb_typeof(kv.value) <> 'null' and kv.value#>>'{}' = '[REDIGIDO]'),
+  'cpf_enc,cpf_hash,cpf_ultimos_digitos,observacoes',
+  'B1 exatamente cpf_enc/cpf_hash/cpf_ultimos_digitos/observacoes sao redigidos no snapshot de pessoas');
 
--- E o proprio ato de anonimizar re-grava o valor antigo em `antes`:
-update public.pessoas set nome='ANONIMIZADO', email=null, telefone=null, observacoes=null,
-       cpf_hash=null, cpf_enc=null, cpf_ultimos_digitos=null, ativa=false
+select is(
+  (select (kv.value#>>'{}') || '|' ||
+          (select (k2.value#>>'{}') from jsonb_each(l.depois) k2 where k2.key='email') || '|' ||
+          (select (k3.value#>>'{}') from jsonb_each(l.depois) k3 where k3.key='telefone')
+     from audit.log l, jsonb_each(l.depois) kv
+    where l.seq > (select seq from _base) and l.tabela='pessoas' and kv.key='nome'),
+  'Ana Maria da Silva|ana.silva@exemplo.com|+5511999998888',
+  'B2 nome/email/telefone ficam EM CLARO, por juizo de proporcionalidade do parecer');
+
+-- FAIL-SAFE: a allowlist e lista do que foi analisado e LIBERADO. Coluna nova numa tabela
+-- auditada tem de NASCER redigida, sem ninguem lembrar de proteger — esquecer de LIBERAR e
+-- inofensivo, esquecer de PROTEGER seria permanente.
+alter table public.pessoas add column apelido text;
+alter table public.pessoas add column endereco_completo text;
+update public.pessoas set apelido='Aninha', endereco_completo='Rua X, 123, apto 101'
  where id='20000000-0000-0000-0000-0000000000a1';
 select is(
-  (select antes->>'nome' from audit.log
-     where seq > (select seq from _base) and tabela='pessoas' and acao='UPDATE' order by seq desc limit 1),
-  null,
-  'B2 o UPDATE de anonimizacao nao pode gravar o nome antigo em claro na propria trilha');
+  (select string_agg(kv.key||'='||(kv.value#>>'{}'), ' ' order by kv.key)
+     from audit.log l, jsonb_each(l.depois) kv
+    where l.seq > (select seq from _base) and l.tabela='pessoas' and l.acao='UPDATE'
+      and kv.key in ('apelido','endereco_completo')),
+  'apelido=[REDIGIDO] endereco_completo=[REDIGIDO]',
+  'B3 coluna NOVA em tabela auditada nasce REDIGIDA sem tocar na allowlist (fail-safe real)');
+
+-- Preservar o FATO de que a coluna mudou, sem o valor — mas nao inventar fato onde nao havia:
+-- valor ja NULL na linha original permanece NULL, nunca vira um '[REDIGIDO]' falso.
+select is(
+  (select jsonb_typeof(kv.value)
+     from audit.log l, jsonb_each(l.depois) kv
+    where l.seq > (select seq from _base) and l.tabela='pessoas' and l.acao='INSERT'
+      and kv.key='anonimizada_em'),
+  'null',
+  'B4 valor ja nulo permanece nulo na trilha (nao vira [REDIGIDO] falso-positivo)');
+
+-- A redacao tem de acontecer ANTES da serializacao canonica. Se o hash tivesse sido calculado
+-- sobre o valor em claro, recomputar a cadeia a partir da linha GRAVADA (ja redigida) nao
+-- bateria — a verificacao e a prova direta da ordem das operacoes.
+select is(
+  coalesce((select string_agg(v.seq::text||': '||v.motivo,'; ') from audit.verificar_cadeia() v),
+           'CADEIA INTEGRA'),
+  'CADEIA INTEGRA',
+  'B5 [REDIGIDO] entra antes do canonico: a cadeia recomputa a partir da linha ja redigida');
+
+-- Retomada INCREMENTAL da verificacao. `audit.ancoras.ate_seq` existe exatamente para isso: a
+-- verificacao semanal retoma de ate_seq+1 em vez de revarrer a cadeia inteira. Mas a funcao le
+-- o hash da linha `desde-1`, e essa linha pode nao existir: toda transacao abortada queima um
+-- nextval de audit.log.seq (constraint violada, policy negando escrita, deploy que falha no
+-- meio). Depois de um gap, a retomada acusa quebra numa cadeia intacta — o mesmo alarme falso do
+-- V5, por outra porta, e igualmente capaz de mascarar adulteracao real.
+do $$ begin
+  insert into public.pessoas (id,nome) values ('20000000-0000-0000-0000-00000000fa11','Queima Nextval');
+  raise exception 'aborta de proposito, queimando o seq';
+exception when others then null; end $$;
+insert into public.pessoas (id,nome) values ('20000000-0000-0000-0000-00000000fa12','Depois Do Gap');
+
+select is(
+  coalesce((select string_agg(v.seq::text||': '||v.motivo,'; ')
+              from audit.verificar_cadeia(
+                (select seq from (select seq, lag(seq) over (order by seq) ant from audit.log) t
+                  where ant is not null and seq <> ant+1 order by seq desc limit 1)) v),
+           'CADEIA INTEGRA'),
+  'CADEIA INTEGRA',
+  'B7 verificacao INCREMENTAL a partir de uma linha logo apos gap de seq nao acusa quebra falsa');
+
+-- Nenhuma tabela auditada pode ter coluna liberada sem motivo escrito — a liberacao e decisao
+-- consciente, com dono e justificativa, nao um INSERT solto.
+select is(
+  (select coalesce(string_agg(tabela||'.'||coluna,',' order by tabela,coluna),'(nenhuma)')
+     from audit.colunas_liberadas where motivo is null or length(btrim(motivo)) < 5),
+  '(nenhuma)',
+  'B6 toda coluna liberada na allowlist tem motivo escrito');
 
 -- ======================================================================
 -- C. O que mantem a decisao reversivel

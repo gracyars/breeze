@@ -12,7 +12,7 @@
 --         ...f1 mandato vencido ontem | ...d1 JWT authenticated sem linha em pessoas
 -- ============================================================================
 begin;
-select plan(22);
+select plan(31);
 
 create function pg_temp.tenta(p_role text, p_sql text)
 returns text language plpgsql as $f$
@@ -160,6 +160,83 @@ select is(
                         'vw_lancamentos_com_comprovante')
       and has_table_privilege('anon',c.oid,'SELECT')),
   '(nenhuma)', 'E2 nenhuma view com dado pessoal ou financeiro e legivel por anon');
+
+-- ======================================================================
+-- F. Autocorrecoes da 2a rodada — a allowlist e a superficie de service_role
+-- ======================================================================
+-- audit.colunas_liberadas decide o que entra em claro numa trilha PERMANENTE. Se um papel de
+-- usuario (ou service_role) puder inserir linha aqui, ele escolhe o que a trilha guarda de
+-- dado pessoal para sempre — vira o mesmo problema que a allowlist existe para resolver.
+select ok( (select relrowsecurity from pg_class where oid='audit.colunas_liberadas'::regclass),
+  'F1 audit.colunas_liberadas tem RLS habilitada');
+select is(
+  (select count(*)::text from pg_policy where polrelid='audit.colunas_liberadas'::regclass),
+  '0', 'F2 audit.colunas_liberadas nao tem policy: RLS habilitada + zero policy = negacao total');
+select is( pg_temp.tenta('authenticated',
+  $$insert into audit.colunas_liberadas (tabela,coluna,motivo) values ('pessoas','cpf_enc','x')$$),
+  'ERRO[42501]', 'F3 authenticated nao libera coluna na allowlist');
+select is( pg_temp.tenta('service_role',
+  $$insert into audit.colunas_liberadas (tabela,coluna,motivo) values ('pessoas','cpf_enc','x')$$),
+  'ERRO[42501]', 'F4 service_role nao libera coluna na allowlist');
+
+-- service_role passou a ter grants declarados. A superficie tem de parar onde o desenho para:
+-- ele le e escreve o que o worker/motor precisam, e nao ganha poder de reescrever o passado.
+select is(
+  (select coalesce(string_agg(c.relname,',' order by c.relname),'(nenhuma)')
+     from pg_class c
+    where c.relnamespace='public'::regnamespace and c.relkind='r'
+      and c.relname in ('lancamentos','papeis','pessoas','cobrancas','pareceres')
+      and (has_table_privilege('service_role',c.oid,'UPDATE')
+        or has_table_privilege('service_role',c.oid,'DELETE'))),
+  '(nenhuma)',
+  'F5 service_role nao tem UPDATE/DELETE em lancamentos/papeis/pessoas/cobrancas/pareceres');
+
+select ok( has_table_privilege('service_role','public.pessoas','SELECT')
+       and not has_table_privilege('authenticated','public.pessoas','SELECT'),
+  'F6 service_role le pessoas (lookup de CPF no login, ADR-0003) e authenticated nao le a tabela inteira');
+
+-- ======================================================================
+-- G. Nao-localidade MODAL (ADR-0023) — a varredura que fecha a classe
+-- ======================================================================
+-- Taxonomia do ADR-0023: nao-localidade CONSTITUTIVA e legitima (as outras linhas SAO a decisao:
+-- papeis, vinculos, documento_unidades, pessoas); nao-localidade MODAL e proibida (as outras
+-- linhas mudam COMO a regra se aplica). Este teste congela o conjunto de tabelas que cada
+-- predicado de autorizacao pode ler. Nao prova ausencia de modal sozinho — os testes de
+-- comportamento (01 bloco H) e que provam; este e o canario que obriga revisao consciente
+-- quando alguem faz um predicado ler uma tabela nova.
+with lidas as materialized (
+  select p.proname,
+         coalesce((select string_agg(distinct m[1], ',' order by m[1])
+                     from regexp_matches(pg_get_functiondef(p.oid),'public\.([a-z_]+)','g') m
+                    where m[1] in (select relname from pg_class
+                                    where relnamespace='public'::regnamespace and relkind='r')),
+                  '-') as tabelas
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname='app' and p.prokind='f'
+)
+select is(
+  (select string_agg(proname||':'||tabelas, ' | ' order by proname) from lidas),
+  'documento_visivel:documentos | eh_autenticado:papeis,vinculos | eh_editor:- | eh_gestao:- | '
+  'nivel_efetivo:documento_paginas,documentos | nivel_visivel:documento_unidades | '
+  'ordem_visibilidade:- | pagina_visivel:documentos | papel_atual:- | pessoa_atual:pessoas | '
+  'tem_papel:papeis,pessoas | unidades_da_pessoa:vinculos',
+  'G1 cada predicado de autorizacao le exatamente as tabelas CONSTITUTIVAS aprovadas (ADR-0023)');
+
+-- nivel_efetivo e o unico que le documento_paginas, e so pode ler A PAGINA AVALIADA: se o filtro
+-- por p_pagina sumir, o predicado volta a depender de linhas irmas — a raiz dos achados 1-3.
+select ok(
+  (select pg_get_functiondef(p.oid) from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname='app' and p.proname='nivel_efetivo') ~ 'dp\.pagina\s*=\s*p_pagina',
+  'G2 nivel_efetivo filtra documento_paginas pela pagina avaliada (leitura local, nao agregada)');
+
+-- E nao pode agregar sobre documento_paginas de forma nenhuma dentro do schema app.
+select is(
+  (select coalesce(string_agg(p.proname,',' order by p.proname),'(nenhuma)')
+     from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname='app' and p.prokind='f'
+      and pg_get_functiondef(p.oid) ~* '(count|exists|string_agg|bool_or|bool_and)\s*\([^)]*documento_paginas'),
+  '(nenhuma)',
+  'G3 nenhum predicado agrega sobre documento_paginas (seria "como" a regra se aplica, nao "qual" linha)');
 
 select * from finish();
 rollback;

@@ -29,6 +29,12 @@ create type public.fundo             as enum ('nenhum', 'reserva', 'obras');
 create type public.origem_lancamento as enum ('balancete_importado', 'manual', 'ajuste');
 create type public.status_cobranca   as enum ('aberta', 'paga', 'atrasada', 'acordo', 'cancelada');
 create type public.tipo_vinculo      as enum ('proprietario', 'inquilino', 'residente', 'procurador');
+-- Motivo do fim de vínculo (parecer docs/juridico/off-boarding-ex-morador.md, item 5.3): fato
+-- datado de origem que a editora já registra para parar a cobrança. Não dispara nada sozinho em
+-- F0 (alertas e rotina de anonimização são F1) — só torna o estado explícito e a futura rotina
+-- idempotente.
+create type public.motivo_fim_vinculo as enum
+  ('venda', 'fim_locacao', 'obito', 'pedido_titular', 'erro_cadastral');
 create type public.severidade_alerta as enum ('baixa', 'media', 'alta', 'critica');
 create type public.status_alerta     as enum ('aberto', 'em_analise', 'resolvido', 'ignorado');
 create type public.status_questionamento as enum ('aberto', 'respondido', 'resolvido');

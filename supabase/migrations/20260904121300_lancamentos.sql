@@ -64,6 +64,26 @@ create trigger lancamentos_bloqueia_mutacao
   for each row execute function public.tg_lancamentos_bloqueia_mutacao();
 
 -- ============================================================================
+-- V2 (auditor-rls, achado real): TRUNCATE furava as três camadas do ADR-0011. REVOKE não
+-- alcança service_role nem o dono da tabela (ver 20260904120000, default privilege de
+-- plataforma); a policy de RLS não se aplica a TRUNCATE (não é DML de linha); e o trigger acima
+-- é FOR EACH ROW — TRUNCATE não dispara trigger de linha, só de STATEMENT. `truncate lancamentos
+-- cascade` zerava o razão inteiro sem deixar UMA linha de trilha. audit.log já resolvia isso com
+-- um trigger STATEMENT-level (audit_log_imutavel_truncate) — mesmo padrão aqui, replicado.
+-- ============================================================================
+create or replace function public.tg_lancamentos_bloqueia_truncate()
+returns trigger language plpgsql as $$
+begin
+  raise exception
+    'lancamentos é imutável (ADR-0011). TRUNCATE bloqueado — inclusive para o dono da tabela e '
+    'para service_role (V2, auditor-rls). Terceira camada, agora também cobrindo TRUNCATE.';
+end $$;
+
+create trigger lancamentos_bloqueia_truncate
+  before truncate on public.lancamentos
+  for each statement execute function public.tg_lancamentos_bloqueia_truncate();
+
+-- ============================================================================
 -- Trigger 2/4 — lancamentos_valida_estorno. BEFORE INSERT, só quando estorna_lancamento_id
 -- is not null:
 --   a) o alvo existe e tem estorna_lancamento_id is null (estorno de estorno é proibido)
@@ -130,24 +150,23 @@ create trigger lancamentos_periodo_aberto
   for each row execute function public.tg_lancamentos_periodo_aberto();
 
 -- ============================================================================
--- Trigger 4/4 — lancamentos_exige_deliberacao. BEFORE INSERT: se contas.exige_deliberacao e
--- tipo='despesa' e deliberacao_id is null -> NÃO bloqueia; grava aviso via RAISE WARNING (dado
--- fica gravado; a geração do alerta formal em `alertas` é do motor de F3, fora deste escopo).
--- Sinalizar, não bloquear silenciosamente (condominio-plano-de-contas §4) — trava dura aqui
--- produziria contorno criativo (ex.: reclassificar em conta que não exige ata).
+-- Trigger 4/4 — lancamentos_exige_deliberacao. BEFORE INSERT.
+-- [D12, docs/dominio/plano-de-contas-decisoes.md] Reescrito: NÃO consulta mais
+-- contas.exige_deliberacao (coluna removida — era flag fixa na conta, frágil, produzia falso
+-- negativo silencioso sempre que a despesa finalística de fundo caía numa conta comum não
+-- marcada). A regra correta é do LANÇAMENTO, não da conta: se tipo='despesa' e
+-- fundo <> 'nenhum' e deliberacao_id is null -> NÃO bloqueia; grava aviso via RAISE WARNING
+-- (a geração do alerta formal em `alertas` é do motor de F3, fora deste escopo). Sinalizar, não
+-- bloquear silenciosamente (condominio-plano-de-contas §4) — trava dura aqui produziria
+-- contorno criativo.
 -- ============================================================================
 create or replace function public.tg_lancamentos_exige_deliberacao()
-returns trigger language plpgsql security definer set search_path = '' as $$
-declare
-  v_exige boolean;
+returns trigger language plpgsql as $$
 begin
-  if new.tipo = 'despesa' and new.deliberacao_id is null then
-    select exige_deliberacao into v_exige from public.contas where id = new.conta_id;
-    if coalesce(v_exige, false) then
-      raise warning
-        'lançamento % em conta que exige deliberação, sem deliberacao_id (SPEC §5.3, alerta '
-        '"Fundo de reserva sem ata"). Não bloqueado — o motor de alertas (F3) sinaliza.', new.id;
-    end if;
+  if new.tipo = 'despesa' and new.fundo <> 'nenhum' and new.deliberacao_id is null then
+    raise warning
+      'lançamento % debita fundo (%) sem deliberacao_id vinculada (SPEC §5.3, alerta "Fundo de '
+      'reserva sem ata"). Não bloqueado — o motor de alertas (F3) sinaliza.', new.id, new.fundo;
   end if;
   return new;
 end $$;
@@ -170,7 +189,7 @@ comment on table public.lancamentos is
 -- ============================================================================
 alter table public.lancamentos enable row level security;
 alter table public.lancamentos force row level security;
-revoke all on public.lancamentos from public, anon, authenticated;
+revoke all on public.lancamentos from public, anon, authenticated, service_role;
 grant select on public.lancamentos to authenticated;
 grant insert on public.lancamentos to authenticated; -- NUNCA update/delete, nem para authenticated
 

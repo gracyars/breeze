@@ -40,4 +40,16 @@ comment on schema job is
 alter default privileges in schema public revoke all on tables    from anon, authenticated;
 alter default privileges in schema public revoke all on sequences from anon, authenticated;
 alter default privileges in schema public revoke all on functions from anon, authenticated;
+
+-- V4 (auditor-rls, achado real): a plataforma concede TRUNCATE/REFERENCES/TRIGGER/MAINTAIN a
+-- `service_role` por default privilege de bootstrap (fora desta baseline, ver
+-- pg_default_acl: defaclrole=postgres, defaclnamespace=public, defaclacl inclui
+-- "service_role=Dxtm") em TODA tabela nova de public. `service_role` bypassa RLS (BYPASSRLS),
+-- mas GRANT de tabela é gate SEPARADO — sem este REVOKE, ele herda TRUNCATE (e nenhum SELECT/
+-- INSERT/UPDATE/DELETE) em silêncio, exatamente o oposto do que o papel mais forte do sistema
+-- deveria poder. Nada é herdado daqui pra frente: cada tabela declara explicitamente, na própria
+-- migração que a cria, o que `service_role` pode — ver `revoke all on <tabela> ... service_role`
+-- seguido de GRANT pontual só onde o desenho realmente precisa (worker, motor de alertas,
+-- audit.acesso, job.fila).
+alter default privileges in schema public revoke all on tables from service_role;
 revoke all on all tables in schema public from anon, authenticated;

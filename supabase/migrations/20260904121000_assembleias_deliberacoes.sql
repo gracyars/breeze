@@ -23,7 +23,7 @@ comment on table public.assembleias is
 
 alter table public.assembleias enable row level security;
 alter table public.assembleias force row level security;
-revoke all on public.assembleias from public, anon, authenticated;
+revoke all on public.assembleias from public, anon, authenticated, service_role;
 grant select on public.assembleias to authenticated;
 grant insert, update, delete on public.assembleias to authenticated;
 
@@ -88,7 +88,7 @@ comment on column public.deliberacoes.chunk_id is
 
 alter table public.deliberacoes enable row level security;
 alter table public.deliberacoes force row level security;
-revoke all on public.deliberacoes from public, anon, authenticated;
+revoke all on public.deliberacoes from public, anon, authenticated, service_role;
 grant select on public.deliberacoes to authenticated;
 grant insert, update, delete on public.deliberacoes to authenticated;
 

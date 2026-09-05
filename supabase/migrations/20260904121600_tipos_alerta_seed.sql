@@ -36,8 +36,10 @@ values
   ('fundo_sem_ata',
    'Fundo de reserva sem ata',
    'critica',
-   'Débito em conta de fundo (contas.fundo <> ''nenhum'' e exige_deliberacao) sem '
-   'deliberacao_id vinculada (ADR-0016 item 6).',
+   'Lançamento com lancamentos.fundo <> ''nenhum'' e deliberacao_id IS NULL, independente da '
+   'conta debitada (D12, docs/dominio/plano-de-contas-decisoes.md — corrige ADR-0016 item 6, que '
+   'fiava a regra numa flag fixa em contas.exige_deliberacao, removida por produzir falso '
+   'negativo silencioso).',
    0),
   ('contrato_vencendo',
    'Contrato vencendo',

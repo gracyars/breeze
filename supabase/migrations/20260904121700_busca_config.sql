@@ -21,7 +21,7 @@ comment on table public.sinonimos is
 
 alter table public.sinonimos enable row level security;
 alter table public.sinonimos force row level security;
-revoke all on public.sinonimos from public, anon, authenticated;
+revoke all on public.sinonimos from public, anon, authenticated, service_role;
 grant select on public.sinonimos to anon, authenticated;
 grant insert, update, delete on public.sinonimos to authenticated;
 
@@ -55,9 +55,13 @@ comment on table public.configuracoes is
 
 alter table public.configuracoes enable row level security;
 alter table public.configuracoes force row level security;
-revoke all on public.configuracoes from public, anon, authenticated;
+revoke all on public.configuracoes from public, anon, authenticated, service_role;
 grant select on public.configuracoes to authenticated; -- NUNCA anon, nem para linha publica=true
 grant insert, update, delete on public.configuracoes to authenticated;
+-- V4: o motor de alertas (service_role) lê limiares aqui (limiar_cotacao_centavos,
+-- variacao_atipica_pct etc.) para avaliar as regras do SPEC §5.3 — ver
+-- 20260904121500_fiscalizacao.sql para a lista completa de leitura do motor.
+grant select on public.configuracoes to service_role;
 
 create policy configuracoes_select on public.configuracoes
   for select to authenticated

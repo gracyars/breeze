@@ -2,7 +2,7 @@
 name: juridico-lgpd
 description: Invocar antes de publicar qualquer dado novo (documento, financeiro, campo de UI) e sempre que uma mudança alterar visibilidade, retenção ou exposição de dado pessoal — CPF, inadimplência nominal, nome associado a unidade. Exemplos de gatilho — "vamos publicar o acervo de atas em busca pública", "front-gestao quer listar quem está inadimplente", "novo campo telefone vai aparecer pra quem", "essa migração adiciona a coluna cpf_enc, pode subir?". Tem poder de veto: bloqueia a publicação até o checklist passar.
 model: opus
-tools: Read, Grep, Glob, Skill, Write
+tools: Read, Grep, Glob, Skill, Write, Bash, WebSearch, WebFetch
 ---
 
 ## Missão

@@ -11,7 +11,7 @@
 --         ...f1 mandato vencido ontem | ...d1 JWT authenticated sem linha em pessoas
 -- ============================================================================
 begin;
-select plan(41);
+select plan(51);
 
 create function pg_temp.probe(p_role text, p_sub text, p_aal text, p_sql text)
 returns text language plpgsql as $f$
@@ -250,6 +250,90 @@ select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000c1',
 select is( pg_temp.tenta('authenticated','00000000-0000-0000-0000-0000000000e1','aal2',
   $$insert into public.pareceres (competencia_inicio,competencia_fim,texto) values (current_date,current_date,'x')$$),
   'ERRO[42501]', 'E4 editor NAO emite parecer: e a unica escrita exclusiva do conselho (SPEC §2.1)');
+
+-- ======================================================================
+-- F. V10 — auto-trancamento do ultimo editor (3a rodada)
+-- ======================================================================
+-- Com `editor` unica (D4), perder o ultimo editor vigente e perda irreversivel do acesso de
+-- escrita: service_role nao tem UPDATE em pessoas nem em papeis (de proposito), entao so um
+-- acesso direto ao banco recupera. Os dois triggers cobrem `pessoas.ativa` e `papeis.mandato_fim`
+-- — mas um mandato sai de vigencia por mais caminhos que esses dois.
+insert into auth.users (id, instance_id, aud, role, email, created_at, updated_at) values
+ ('00000000-0000-0000-0000-0000000000f9','00000000-0000-0000-0000-000000000000','authenticated','authenticated','p-solo@t.local',now(),now());
+insert into public.pessoas (id, auth_user_id, nome) values
+ ('20000000-0000-0000-0000-0000000000f9','00000000-0000-0000-0000-0000000000f9','Solo Editora');
+-- Solo entra como editora ANTES de encerrar os outros: o proprio trigger impede deixar o
+-- sistema sem editor, entao a ordem importa (e ja e a prova de que a trava basica funciona).
+insert into public.papeis (id, pessoa_id, papel) values
+ ('50000000-0000-0000-0000-0000000000f9','20000000-0000-0000-0000-0000000000f9','editor');
+update public.papeis set mandato_fim = current_date - 1
+ where papel='editor' and pessoa_id <> '20000000-0000-0000-0000-0000000000f9';
+
+select is( pg_temp.tenta('authenticated','00000000-0000-0000-0000-0000000000f9','aal2',
+  $$update public.pessoas set ativa=false where id='20000000-0000-0000-0000-0000000000f9'$$),
+  'ERRO[P0001]', 'F1 a unica editora nao consegue se desativar (ativa=false)');
+
+select is( pg_temp.tenta('authenticated','00000000-0000-0000-0000-0000000000f9','aal2',
+  $$update public.papeis set mandato_fim=current_date-1 where id='50000000-0000-0000-0000-0000000000f9'$$),
+  'ERRO[P0001]', 'F2 a unica editora nao consegue encerrar o proprio mandato (mandato_fim)');
+
+-- Um mandato tambem sai de vigencia empurrando o INICIO para o futuro. O trigger so olha
+-- mandato_fim, entao esta rota nao passa por checagem nenhuma.
+select is( pg_temp.tenta('authenticated','00000000-0000-0000-0000-0000000000f9','aal2',
+  $$update public.papeis set mandato_inicio=current_date+30 where id='50000000-0000-0000-0000-0000000000f9'$$),
+  'ERRO[P0001]', 'F3 a unica editora nao consegue jogar o proprio mandato_inicio para o futuro');
+
+-- E o papel pode simplesmente deixar de ser 'editor'. O trigger dispara em UPDATE OF mandato_fim,
+-- entao trocar a coluna `papel` nao o aciona.
+select is( pg_temp.tenta('authenticated','00000000-0000-0000-0000-0000000000f9','aal2',
+  $$update public.papeis set papel='morador' where id='50000000-0000-0000-0000-0000000000f9'$$),
+  'ERRO[P0001]', 'F4 a unica editora nao consegue rebaixar o proprio papel para morador');
+
+-- INVARIANTE, sem prescrever mecanismo: aconteca o que acontecer, tem de sobrar editor vigente.
+select ok(
+  exists (select 1 from public.papeis pa join public.pessoas pe on pe.id = pa.pessoa_id
+           where pa.papel='editor' and pe.ativa and pa.mandato_inicio <= current_date
+             and (pa.mandato_fim is null or pa.mandato_fim >= current_date)),
+  'F5 depois de todas as tentativas de auto-trancamento, ainda existe editor vigente');
+
+-- Rotas descobertas na 4a rodada. O trigger passou a disparar em UPDATE (sem `OF coluna`) e a
+-- comparar o ESTADO RESULTANTE via public.eh_editor_vigente_linha(), entao qualquer caminho que
+-- tire a linha de vigencia e pego — inclusive transferir o papel para uma pessoa inativa, que e
+-- o unico que exige DOIS lookups de `pessoas.ativa` (antes/depois) para ser detectado.
+insert into public.pessoas (id, nome, ativa) values
+ ('20000000-0000-0000-0000-0000000000fa','Pessoa Inativa Alvo', false);
+
+select is( pg_temp.tenta('authenticated','00000000-0000-0000-0000-0000000000f9','aal2',
+  $$update public.papeis set pessoa_id='20000000-0000-0000-0000-0000000000fa'
+     where id='50000000-0000-0000-0000-0000000000f9'$$),
+  'ERRO[P0001]', 'F6 transferir o papel do ultimo editor para pessoa INATIVA e bloqueado');
+
+select is( pg_temp.tenta('authenticated','00000000-0000-0000-0000-0000000000f9','aal2',
+  $$update public.papeis set pessoa_id='20000000-0000-0000-0000-0000000000fa',
+                             mandato_inicio=current_date-1
+     where id='50000000-0000-0000-0000-0000000000f9'$$),
+  'ERRO[P0001]', 'F7 transferir para inativa mexendo no mandato junto tambem e bloqueado');
+
+-- "Designar" um editor numa pessoa inativa nao conta como designar ninguem.
+select is( pg_temp.tenta('authenticated','00000000-0000-0000-0000-0000000000f9','aal2',
+  $$insert into public.papeis (pessoa_id,papel) values ('20000000-0000-0000-0000-0000000000fa','editor');
+    update public.papeis set mandato_fim=current_date-1 where id='50000000-0000-0000-0000-0000000000f9'$$),
+  'ERRO[P0001]', 'F8 dar papel de editor a uma pessoa INATIVA nao libera encerrar o proprio mandato');
+
+-- A vigencia de editor tem de ser decidida num lugar so. Se cada trigger reescrever o predicado,
+-- eles divergem — foi assim que a rota do mandato_inicio e a do papel escaparam na 3a rodada.
+select ok( to_regprocedure('public.eh_editor_vigente_linha(public.papel,date,date,boolean)') is not null,
+  'F9 existe UMA funcao que decide "esta linha e editor vigente" (predicado nao reescrito por trigger)');
+
+-- Os dois triggers precisam disparar em UPDATE inteiro: vigiar `OF <coluna>` deixa de fora toda
+-- coluna que ninguem lembrou de listar.
+select is(
+  (select coalesce(string_agg(t.tgname,',' order by t.tgname),'(nenhum)')
+     from pg_trigger t join pg_class c on c.oid = t.tgrelid
+    where c.relname in ('pessoas','papeis') and not t.tgisinternal
+      and t.tgname like '%editor%' and t.tgattr <> ''::int2vector),
+  '(nenhum)',
+  'F10 os triggers do ultimo editor disparam em UPDATE inteiro, nao em UPDATE OF <coluna>');
 
 select * from finish();
 rollback;

@@ -229,3 +229,189 @@ segura o modelo de pé (fica mantida por conservadorismo).
 enum — exige migração.
 
 *Escopo:* ADR-0019. Implementação com o `eng-supabase`, junto com V1, V2 e V4–V7.
+
+**D14 — Assinatura de parecer é congelada em snapshot; e o critério que autoriza denormalizar
+PII.** O `auditor-rls` isolou um conflito entre duas regras que incidem sobre a mesma pessoa e,
+corretamente, **não escreveu teste vermelho** — teste congela decisão, e esta não estava tomada.
+A identidade de quem assinou um parecer existia só em `pessoas.nome`, por chave estrangeira:
+rodada a anonimização de ex-morador, o signatário virava "ANONIMIZADO". Um conselheiro que depois
+vende o apartamento é, ao mesmo tempo, titular com direito à eliminação (LGPD art. 18) e signatário
+de ato cuja assinatura **nunca se anonimiza** (`docs/juridico/off-boarding-ex-morador.md` §4:
+assinatura é a validade do parecer, CC art. 1.356; LGPD art. 16, I).
+
+*Por que não era detalhe:* com editora única (D4), o parecer do conselho é a peça de contrapeso —
+o julgamento independente que dá credibilidade a um sistema operado por quem seria auditada.
+Parecer sem signatário identificável não tem valor probatório nenhum. Perder o nome não degradava
+o registro: destruía a função dele.
+
+*Decisão:* **snapshot** — `parecer_signatarios.nome_signatario` e `qualificacao`, congelados por
+trigger quando `assinado_em` deixa de ser nulo, imutáveis depois. A FK `pessoa_id` permanece: a FK
+liga, o snapshot atesta. Descartada a alternativa de **regra de processo** ("quem assinou parecer
+não se anonimiza"), pela mesma fragilidade que a D12 e o achado V1 já custaram duas vezes —
+**regra que depende de execução humana correta não é regra, é intenção** — agravada por D4, em que
+o executante é uma pessoa só, e por falhar em silêncio, aparecendo só quando o parecer é
+necessário.
+
+*Fronteira legal, com o `juridico-lgpd`:* a validade do ato justifica reter o **mínimo que o torna
+atribuível** — nome e qualificação. **Não** justifica CPF, e-mail, telefone ou unidade; usar uma
+exceção estreita como guarda-chuva é o abuso clássico do art. 16 (necessidade, LGPD art. 6º, III).
+E reter contra pedido do titular exige **saber explicar a ele**: a resposta a pedido de eliminação
+passa a enumerar o que permanece e sob qual base, com a retenção registrada no RIPD.
+
+*O critério, porque vai ser citado por analogia.* Denormalizar dado pessoal exige **três testes
+cumulativos**, não a maioria: (1) **constituição** — o dado é elemento do ato, sem o qual o ato
+deixa de existir juridicamente? (não vale "é útil na tela" ou "evita um join"); (2)
+**irreversibilidade legítima** — existe base legal nomeável em artigo que impede eliminar a pedido
+do titular?; (3) **congelamento** — o valor certo é o do momento do ato, e atualizar o dado atual
+**não** deveria propagar? Qualquer "não" ⇒ chave estrangeira para `pessoas`, e a anonimização
+propaga como deve. O terceiro teste é o mais útil no dia a dia porque não exige juízo jurídico:
+separa *cache* de *snapshot*, e **cache de PII é dívida, não decisão**.
+
+*Isto não é precedente para "denormalizar PII é aceitável"*, porque o primeiro teste é quase sempre
+"não". A autorização vem de o dado ser parte do ato jurídico — não de ser conveniente, e não de a
+estrutura ser imutável. Imutabilidade não justifica nada: é justamente o que torna o erro
+irreparável. Aplicando ao próprio schema, `questionamentos.autor_id`, `documentos.publicado_por`,
+`lancamentos.criado_por` e `alertas.resolvido_por` **continuam FK** — a proveniência deles se
+sustenta em `pessoa_id` e na cadeia de hash, não no nome legível.
+
+*Contraste útil com o achado V9:* `audit.log` copia `pessoas.nome` para dentro de uma cadeia de
+hash, de onde não sai. Mesma forma técnica, veredito oposto — falha o teste 1 (é registro de
+mudança, não elemento de ato) e o teste 3 (o valor deveria acompanhar a pessoa), e o próprio
+`juridico-lgpd` diz que a trilha "só fica coberta se `actor` for id, nunca nome denormalizado".
+Lá é dívida a minimizar **antes** que mais linhas entrem na cadeia, porque redação retroativa
+quebra o encadeamento (ADR-0013). A resolução do V9 não é desta decisão; o critério só mostra de
+que lado ele cai, e que a janela para decidir é agora.
+
+*Escopo:* ADR-0020. Altera o modelo de dados (SPEC §2). Migração com o `eng-supabase`; testes de
+"anonimizou e o snapshot permanece" e "snapshot é imutável" com o `auditor-rls`; item de runbook e
+de RIPD com `juridico-lgpd` e `devops`.
+
+**D15 — Invariante de dois lados, guarda de um lado só: o padrão, não os três bugs.** A segunda
+rodada do `auditor-rls` bloqueou com três achados e, ao fechar, nomeou o que os une:
+
+> **A invariante é validada na escrita de um lado da relação e não é revalidada quando o outro
+> lado muda.**
+
+- **V1-R:** a uniformidade de visibilidade do chunk é checada ao **inserir o chunk**, e nada
+  revalidava quando `documento_paginas.visibilidade` mudava depois — que é **a ordem real do
+  pipeline** (o worker chunkiza, a curadoria classifica em seguida). Vazou texto sigiloso pela
+  busca, com a chave `anon`.
+- **V3-R:** o piso era validado ao escrever a página; **subir `documentos.visibilidade` depois**
+  quebrava a invariante sem ninguém checar. Texto negado, PDF inteiro liberado.
+- **V5-R:** `verificar_cadeia` semeava com `seq = desde - 1`, tratando ordinal como endereço.
+  Toda transação abortada queima um `nextval`; com buraco, acusa quebra falsa em cadeia intacta.
+
+*Por que o banco não ajuda:* `CHECK` é intrinsecamente de **uma linha só**. Assim que a invariante
+atravessa duas linhas — mais ainda duas tabelas — não há ferramenta declarativa, e a completude da
+guarda vira **enumeração manual de caminhos**. Humano enumera o caminho que está escrevendo agora.
+
+*Detalhe que condena o método antigo:* no V3-R o desenho **já dizia** os dois lados — `schema.md` e
+ADR-0019 traziam "triggers nas duas direções". A implementação fez um. **Prosa em documento de
+desenho não sobrevive à implementação**; precisa ser célula de checklist.
+
+*Decisão 1 — critério de reconhecimento.* Sempre que a invariante envolver duas tabelas (ou duas
+colunas em tabelas diferentes), a pergunta não é "como garanto isto aqui", é **"quais são todos os
+caminhos que podem violar isto"** — e a resposta vira **matriz `(tabela × operação)`** no comentário
+da migração, incluindo os caminhos não-DML (escrita por `service_role`, restore, e propriedades
+assumidas por leitores, como contiguidade de `seq`). **Célula vazia é bug, não pendência.**
+
+*Decisão 2 — hierarquia de soluções*, porque nem toda invariante deve virar dois triggers:
+**(0) eliminar** — remodelar para não existir (a mais barata é a que não existe; descartada aqui
+conscientemente: computar visibilidade de chunk por agregação em leitura trocaria custo de escrita
+por custo na tabela mais lida); **(1) derivar** — fazer o segundo caminho não existir (foi o
+conserto do V1, com `tem_paginas_mistas`); **(2) validar dos dois lados** — quando ambos precisam
+ser escritos por gente (conserto do V3-R); **(3) invalidar/reprocessar o derivado** — quando
+bloquear quebraria fluxo legítimo. O V1-R é caso (3), e o critério é **medível**: o auditor mediu
+que bloquear a reclassificação quebra o fluxo de curadoria que motivou o modelo inteiro. Regra de
+escolha: *se bloquear o segundo caminho impede um fluxo legítimo e frequente, você está no (3);
+bloquear ali não é rigor, é desenho errado — e a pressão de trabalho produz o contorno.*
+
+*Consertos:* reclassificar página **apaga** os chunks que a intersectam e reenfileira (apagar, não
+marcar como inválido — flag exigiria lembrar de `and invalidado_em is null` em toda consulta, que é
+o erro que esta decisão trata; linha apagada não vaza, e lacuna temporária de busca é melhor que
+janela de vazamento). Trigger de piso no lado `documentos`. Seed do verificador por ordem
+(`where seq < desde order by seq desc limit 1`): **`seq` dá ordem, não endereço.**
+
+*A mesma família de erro, em roupas diferentes* — e é o motivo de registrar isto como decisão e não
+como conserto: **D12** (regra apoiada em classificação de conta em vez de fato), **V1/D13**
+(trava apoiada em flag marcada à mão) e esta (invariante validada num caminho só) **falham em
+silêncio, parecem certas em revisão de código, e só apareceram porque alguém executou contra o
+banco**. A razão de serem invisíveis na revisão é estrutural: **revisão lê o que está escrito;
+estes bugs são o que não está escrito** — ausência não tem linha para comentar. Só duas coisas
+acham ausência: enumeração explícita e execução. Daí a prática que fica: **para cada proteção,
+qual é o teste vermelho que prova que ela funciona?** Sem ele não há guarda, há intenção.
+
+*Nota para F1:* quem escrever o chunker **vai** encontrar este caso. Está no SPEC §3, e as
+mensagens de exceção dos triggers citam o ADR-0021 — é o que a pessoa lê às duas da manhã, e vale
+mais que qualquer índice de documentação.
+
+*Junto, o **V10** (ADR-0022): o último `editor` vigente não pode ser desativado.* Não é vazamento,
+é **indisponibilidade irreversível** — com editora única (D4) ela pode se auto-desativar, e
+`service_role` não tem `UPDATE` em `pessoas` nem `papeis` (o que está certo, ADR-0012 item 6).
+Trigger nos dois caminhos (`pessoas.ativa`, `papeis.mandato_fim`/`DELETE`), com mensagem que **diz
+a saída** ("conceda `editor` a outra pessoa antes"). Mesmo princípio da D9: onde dá para tornar a
+falha impossível por construção, torna-se, em vez de documentar o cuidado. Limite honesto e
+registrado: **isto resolve o acidente, não o ataque** — conta comprometida continua dependendo da
+D9 e da trilha do ADR-0013. E o lock-in resultante torna visível, toda vez que alguém esbarra nele,
+o custo de ter um editor só (Briefing §7 item 2).
+
+*Escopo:* ADR-0021 e ADR-0022. Implementação com o `eng-supabase`; testes de negação **pelo segundo
+caminho** com o `auditor-rls`.
+
+**D16 — Predicado de autorização deve ser local; e a matriz vira formulário com gate.** A 3ª rodada
+do `auditor-rls` (160/164) achou o mesmo padrão de outro ângulo. `app.nivel_efetivo` decidia o nível
+de uma página consultando **outras páginas** (`app.documento_tem_override`): documento com piso
+`publico`, página 3 com override, páginas 5 e 6 sem classificação ficavam invisíveis; **apagada a
+página 3**, 5 e 6 passavam a herdar `publico`. **Conteúdo fechado abriu sozinho por causa de um
+`DELETE` em outra linha.** E a anomalia era simétrica: sob a invariante do piso, num documento
+`publico` o único override possível é `publico` — um no-op que **fechava** todas as demais páginas.
+
+*Princípio, na forma que fica:* **o valor de um predicado de autorização pode depender da linha
+avaliada, das linhas que a definem por chave estrangeira e do sujeito da sessão — de mais nada.
+Quando depende de outras linhas, toda escrita naquelas linhas é uma mudança de autorização**, ainda
+que ninguém a tenha chamado assim.
+
+*Onde a formulação original foi corrigida* (e o orquestrador pediu que fosse contrariada se
+necessário): "a única forma barata de domar isso é monotonizar" não sobrevive ao resto do schema.
+Há duas espécies de não-localidade. **Constitutiva** — as outras linhas **são** a decisão
+(`papeis`, `vinculos`, `documento_unidades`); ali escrita-é-autorização é a funcionalidade, e
+monotonizar significaria **mandato que nunca expira**, contrariando frontalmente o veto do
+`juridico-lgpd` (acesso cessa em `vinculos.fim` + 0 dias). **Modal** — as outras linhas só decidem
+*como* a regra se aplica; é a espécie que vaza, justamente porque ninguém a percebe como decisão de
+autorização. Monotonizar serve à modal, como degrau. O alvo é **eliminar** (nível 0 do ADR-0021),
+e aqui a eliminação estava disponível e era mais simples que o patch.
+
+*Conserto:* remover o ramo e a função. `nivel_efetivo` vira `coalesce(pagina.visibilidade,
+documento.visibilidade)` — puramente local. `tem_paginas_mistas` sai do caminho de segurança e fica
+só como sinalizador de intenção para a UI.
+
+*Erro meu, registrado porque é reutilizável:* no ADR-0019 eu anotei que a regra fail-closed tinha
+virado redundante sob a invariante do piso — e a mantive **"por conservadorismo"**. Foi essa camada
+redundante que introduziu a não-localidade que vazou. **Redundância só é defesa quando é local**;
+defesa em profundidade que acrescenta dependência não-local não é proteção extra, é superfície
+extra. E uma correção de rumo sobre a D13: **"sempre derivar" era conselho incompleto** — derivar
+não elimina a dependência, **muda o dono dela**, de um humano que esquece para outras linhas que
+mudam. A flag autoral do V1 era ruim por ser autoral; o derivado que a substituiu era ruim por ser
+não-local. A resposta certa não era nenhuma das duas: era não precisar do conceito.
+
+*Segunda decisão — o checklist vira artefato, não regra.* Nas três rodadas todos os defeitos tiveram
+a mesma forma (página × documento, chunk × página, `mandato_fim` × as outras colunas de vigência,
+página apagada × as que sobraram). A regra que teria evitado o V3-R **já estava escrita em negrito
+no `schema.md`** e passou assim mesmo. Então o entregável é **`docs/invariantes/`**: um formulário
+por invariante, com **vocabulário fechado de células** (`GUARDADO`/`INVALIDA`/`IMPOSSÍVEL`/
+`MONOTÔNICO`/`ACEITO`, sempre com argumento), **coluna obrigatória de teste vermelho**, e **gate de
+CI que bloqueia merge** com célula vazia, valor fora do vocabulário, teste inexistente ou linha
+faltando.
+
+*O que faz o formulário funcionar não é a tabela, é como as linhas nascem:* pelo **produto
+cartesiano do conjunto de dependência** — `INSERT`, `DELETE` e **um `UPDATE` por coluna** —, mais
+quatro linhas fixas (`service_role`, **concorrência**, restore/migração, propriedade assumida por
+leitor). O V10 é a prova: vigiou `mandato_fim` e passaram `mandato_inicio`, `papel` e a corrida
+concorrente — três células que a geração mecânica teria deixado gritando. E ao preencher o INV-02
+apareceu **uma quarta lacuna que nenhuma das três auditorias tinha nomeado**: `UPDATE
+papeis.pessoa_id`, transferir o papel para uma pessoa inativa. A matriz encontra o que a imaginação
+não enumera.
+
+*Escopo:* ADR-0023 e `docs/invariantes/` (README, template, INV-02 preenchido como referência,
+INVENTARIO com 12 invariantes e donos). Implementação do gate: `devops` com `eng-supabase`.
+Preenchimento das 11 restantes: `eng-supabase`, antes de produção, começando por INV-12 e INV-01.

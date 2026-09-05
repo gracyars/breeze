@@ -29,7 +29,7 @@ comment on table public.questionamentos is
 
 alter table public.questionamentos enable row level security;
 alter table public.questionamentos force row level security;
-revoke all on public.questionamentos from public, anon, authenticated;
+revoke all on public.questionamentos from public, anon, authenticated, service_role;
 grant select on public.questionamentos to authenticated;
 grant insert, update on public.questionamentos to authenticated;
 
@@ -63,7 +63,7 @@ comment on table public.tipos_alerta is
 
 alter table public.tipos_alerta enable row level security;
 alter table public.tipos_alerta force row level security;
-revoke all on public.tipos_alerta from public, anon, authenticated;
+revoke all on public.tipos_alerta from public, anon, authenticated, service_role;
 grant select on public.tipos_alerta to authenticated;
 grant insert, update, delete on public.tipos_alerta to authenticated;
 
@@ -112,9 +112,32 @@ comment on table public.alertas is
 
 alter table public.alertas enable row level security;
 alter table public.alertas force row level security;
-revoke all on public.alertas from public, anon, authenticated;
+revoke all on public.alertas from public, anon, authenticated, service_role;
 grant select on public.alertas to authenticated;
-grant update on public.alertas to authenticated; -- insert: só service_role (bypassa RLS); delete: ninguém
+grant update on public.alertas to authenticated; -- delete: ninguém
+-- V4 (auditor-rls, achado real): "insert: só service_role" era só comentário — sem GRANT
+-- explícito, service_role não tinha NENHUM privilégio aqui (BYPASSRLS bypassa RLS, não GRANT de
+-- tabela, que é um gate separado). O motor de alertas, como desenhado, era inoperável.
+grant select, insert on public.alertas to service_role;
+
+-- V4 (auditor-rls, achado real, confirmado por teste ao vivo): GRANT só em `alertas` não bastava
+-- — o motor precisa LER as tabelas que cada uma das 10 regras do SPEC §5.3 avalia para decidir
+-- se levanta o alerta. Sem isso, `insert into alertas` falhava indiretamente porque a subquery
+-- de origem (ex.: "pegue um lançamento/conta real") já não tinha SELECT. Concedido só leitura,
+-- por regra:
+--   despesa_sem_comprovante, fundo_sem_ata, variacao_atipica, fracionamento_suspeito,
+--   fornecedor_nao_cadastrado -> lancamentos
+--   despesa_sem_comprovante, cotacao_ausente                    -> lancamento_anexos
+--   estouro_orcamento                                           -> orcamento
+--   contrato_vencendo, renovacao_nao_deliberada                 -> contratos
+--   fornecedor_nao_cadastrado, troca_dados_bancarios             -> fornecedores
+--   troca_dados_bancarios                                        -> fornecedor_dados_bancarios
+--   (classificação/nome de conta em qualquer regra)              -> contas
+-- `cotacao_ausente`/`fracionamento_suspeito` também leem o limiar em `configuracoes`
+-- (grant nesse schema fica em 20260904121700_busca_config.sql, onde a tabela é criada).
+grant select on public.contas, public.lancamentos, public.lancamento_anexos, public.orcamento,
+  public.contratos, public.fornecedores, public.fornecedor_dados_bancarios
+  to service_role;
 
 create policy alertas_select on public.alertas
   for select to authenticated using ( app.eh_gestao() );
@@ -150,7 +173,7 @@ comment on table public.pareceres is
 
 alter table public.pareceres enable row level security;
 alter table public.pareceres force row level security;
-revoke all on public.pareceres from public, anon, authenticated;
+revoke all on public.pareceres from public, anon, authenticated, service_role;
 grant select on public.pareceres to authenticated;
 grant insert, update on public.pareceres to authenticated;
 
@@ -175,7 +198,7 @@ comment on table public.parecer_signatarios is
 
 alter table public.parecer_signatarios enable row level security;
 alter table public.parecer_signatarios force row level security;
-revoke all on public.parecer_signatarios from public, anon, authenticated;
+revoke all on public.parecer_signatarios from public, anon, authenticated, service_role;
 grant select on public.parecer_signatarios to authenticated;
 grant insert, update, delete on public.parecer_signatarios to authenticated;
 

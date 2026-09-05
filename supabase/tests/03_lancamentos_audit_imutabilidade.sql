@@ -211,8 +211,15 @@ select is( pg_temp.tenta('postgres',null,null,$$delete from audit.log$$),
   'ERRO[P0001]', 'D5 nem o dono apaga audit.log');
 select is( pg_temp.tenta('postgres',null,null,$$truncate audit.log$$),
   'ERRO[P0001]', 'D6 nem o dono trunca audit.log (trigger statement-level)');
-select is( (select depois->>'cpf_enc' from audit.log where tabela='pessoas' and acao='INSERT' order by seq desc limit 1),
-  '[redigido]', 'D7 cpf_enc entra REDIGIDO na trilha (a trilha nao vira 2a copia do dado pessoal)');
+-- Redacao por ALLOWLIST (V9) — marcador atualizado para '[REDIGIDO]' e regra invertida: e lista
+-- do que foi analisado e LIBERADO, nunca do que deve sumir. Ver 05_trilha_pii_anonimizacao.sql
+-- para a invariante completa (parecer juridico 2026-09-04).
+-- Aponta para a pessoa que DE FATO tem cpf_enc na fixture (Edna). Valor ja nulo permanece nulo
+-- por desenho, entao pegar "a ultima pessoa inserida" testaria a coisa errada.
+select is( (select depois->>'cpf_enc' from audit.log
+             where tabela='pessoas' and acao='INSERT'
+               and registro_id='20000000-0000-0000-0000-0000000000e1' order by seq desc limit 1),
+  '[REDIGIDO]', 'D7 cpf_enc entra REDIGIDO na trilha (a trilha nao vira 2a copia do CPF)');
 select is( (select actor_papel from audit.log where tabela='lancamentos' and acao='INSERT' order by seq desc limit 1),
   'editor', 'D8 a trilha grava o papel VIGENTE do ator, nao o claim do JWT');
 

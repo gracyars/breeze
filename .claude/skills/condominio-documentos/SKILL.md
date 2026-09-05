@@ -10,7 +10,18 @@ coluna `visibilidade`: público / autenticado / conselho / restrito). Regra de f
 decisão 1 e Decisão D2): **só convenção e regimento são públicos**; todo o resto — atas,
 balancetes, contratos, prestação de contas — fica atrás de login, porque carrega nome e unidade
 de pessoas. `conselho` e `restrito` existem para o que, além disso, expõe dado sensível
-individualizado (inadimplência nominal, saúde, imagem).
+individualizado (inadimplência nominal, saúde, imagem) **ou dado pessoal de terceiro que não é
+condômino** (representante de fornecedor, responsável técnico, funcionário).
+
+**Classifique o artefato, não o assunto.** Um mesmo assunto costuma gerar dois documentos com
+visibilidades diferentes — a proposta comercial que o fornecedor emitiu e o comunicado que a
+administração mandou aos moradores sobre aquela proposta. Classificar pelo assunto funde os dois e
+vaza o mais sensível. Ver §12-bis.
+
+**A visibilidade do documento é o piso (D13/ADR-0019).** Override de página só *amplia*, nunca
+restringe: `conselho < restrito < autenticado < publico`. Consequência prática para quem
+classifica: **a página mais sensível arrasta o arquivo inteiro para baixo**. Não existe documento
+`autenticado` com uma página `conselho`.
 
 Para cada tipo: periodicidade, quem produz, metadados a extrair para a tabela `documentos`/
 `documento_paginas`, o que as pessoas buscam dentro dele, e visibilidade padrão.
@@ -128,9 +139,52 @@ Para cada tipo: periodicidade, quem produz, metadados a extrair para a tabela `d
   §5.3), deliberação de assembleia que autorizou, cronograma, valor total, `documento_id` de
   cada comprovante.
 - **Busca típica:** "quanto custou a obra X", "teve cotação comparativa", status de andamento.
-- **Visibilidade padrão:** autenticado; anexos de cotação/nota fiscal individual seguem a mesma
-  visibilidade do lançamento a que se vinculam (`lancamento_anexos`: `conselho` e `editor`,
-  SPEC §2).
+- **Visibilidade padrão:** autenticado **para o projeto, cronograma e comprovação de execução**.
+  Cotação e proposta comercial **não** seguem este padrão — têm regra própria na §12-bis, e foi
+  justamente classificar cotação como "documentação de obras" que produziu a divergência do
+  `inventario-acervo.md` (#13 vs. #35–37).
+
+## 12-bis. Cotações e propostas comerciais
+Parecer completo: `docs/juridico/pareceres/2026-09-04-visibilidade-cotacoes.md`.
+
+- **Periodicidade:** sob demanda, em bloco — vêm de duas a quatro por decisão de contratação.
+- **Produz:** o fornecedor emite a proposta; a administração produz o comunicado/quadro
+  comparativo que a resume aos moradores. **São dois artefatos, com visibilidades diferentes.**
+- **Metadados:** fornecedor proponente (CNPJ, razão social), objeto, valor proposto, validade da
+  proposta, decisão a que se vincula, `lancamento_id` quando já houver despesa.
+- **Busca típica:** "teve cotação comparativa", "por que escolheram essa empresa", conferência do
+  alerta de cotação ausente.
+
+**R1 — Proposta comercial na íntegra: `conselho`.** Três razões, em ordem de força:
+1. A mesma cotação anexada a um lançamento já é `conselho`/`editor` (`lancamento_anexos`,
+   SPEC §2). Se, entrando como `documentos`, virasse `autenticado`, a visibilidade do mesmo
+   arquivo dependeria de por onde ele foi carregado — isso é acidente, não política.
+2. A íntegra carrega, de praxe, nome, CPF, telefone e e-mail do representante, assinatura e
+   ART/CREA do responsável técnico: dado pessoal de terceiro que não é condômino, e desnecessário
+   à finalidade do morador (LGPD art. 6º, III).
+3. Com o piso da D13, a página do CPF arrasta o documento inteiro. Ou desce tudo, ou vaza.
+
+*Não é razão, e não use como base:* "preço de fornecedor é sigiloso". Preço de pessoa jurídica
+não é dado pessoal (LGPD art. 5º, I alcança só pessoa natural) e o condomínio não prometeu sigilo.
+Restringir por interesse comercial do fornecedor é decisão de produto, não fundamento jurídico.
+
+**R2 — A prova de concorrência chega ao morador como dado estruturado, não como arquivo.** O
+alerta "cotação ausente" pressupõe que o condômino verifique que *houve* mais de uma proposta, não
+que leia 27 páginas. Morador vê quantidade, razão social do proponente PJ, valor e data, vindos de
+`lancamento_anexos`/`fornecedores`. Mesmo desenho da inadimplência: agregado para o morador,
+íntegra para a gestão. *Canto:* proponente pessoa física ou MEI — a razão social **é** dado
+pessoal; mostrar só contagem e valores.
+
+**R3 — Comunicado ou quadro comparativo da administração: `autenticado`**, se não carregar PII de
+pessoa natural nem dado bancário. A finalidade do artefato é informar o morador e ele já foi
+distribuído a todos — publicar no acervo não acrescenta exposição. Se carregar, desce a `conselho`.
+
+**R4 — Nunca `publico`** (não é normativa e impessoal) **nem `restrito`** (`restrito` significa
+vinculada a uma unidade; cotação não é de ninguém).
+
+**R5 — Visibilidade uniforme; não usar override de página.** Com D13 o override só amplia, e
+ampliar páginas de uma proposta `conselho` é custo de curadoria sem benefício — a necessidade do
+morador já está atendida por R2 — enquanto cada override é superfície nova de erro.
 
 ## 13. Atas do conselho fiscal
 - **Periodicidade:** conforme reunião do conselho — tipicamente mensal, acompanhando o
@@ -166,6 +220,12 @@ Um classificador lê o texto das primeiras 1–2 páginas e procura expressões 
   mês/rubrica sem coluna "realizado".
 - **Contrato:** "pelo presente instrumento particular", "contratante" e "contratada",
   "cláusula primeira — do objeto", CNPJ no cabeçalho.
+- **Proposta comercial / cotação:** "proposta comercial", "orçamento nº", "validade da proposta",
+  "condições de pagamento", "escopo do fornecimento", papel timbrado de empresa com CNPJ, nome e
+  contato direto de vendedor no rodapé. **Distinguir do comunicado que a resume:** o comunicado é
+  curto (1–2 páginas), é endereçado "aos senhores condôminos" e compara propostas de mais de um
+  fornecedor no mesmo arquivo; a proposta é longa, tem um emissor só e fala na primeira pessoa da
+  empresa. Na dúvida entre os dois, classificar como proposta — falha para o lado restritivo.
 - **Apólice de seguro:** "apólice nº", "seguradora", "importância segurada", "vigência de...a...".
 - **Laudo técnico:** "AVCB", "Auto de Vistoria do Corpo de Bombeiros", "laudo de inspeção",
   "ART" ou "RRT", "responsável técnico", "CREA/CFT nº".
@@ -185,6 +245,7 @@ Um classificador lê o texto das primeiras 1–2 páginas e procura expressões 
 | Prestação de contas anual | Permanente |
 | Previsão orçamentária | Permanente (comparabilidade histórica) |
 | Contratos de fornecedor | Vigência + 5 anos após encerramento [VERIFICAR — prazo prescricional de ação cível] |
+| Cotações e propostas comerciais | 5 anos (Lei 4.591/64, art. 22, §1º, "g"); se fundamentaram contrato, vigência do contrato + 5 anos |
 | Apólices de seguro | Vigência + 5 anos [VERIFICAR] |
 | Laudos técnicos | Até a próxima renovação, mas manter histórico para auditoria de conformidade |
 | Notificações e multas | 5 anos [VERIFICAR — prazo prescricional civil, art. 206 CC] |
@@ -205,6 +266,10 @@ visibilidade pública nem autenticado-geral — no máximo `conselho`, em regra 
 - **Inadimplência nominal de terceiros** — morador vê a própria situação e o agregado do
   condomínio; nome + unidade + valor em atraso de outro morador é `conselho`/`editor` (SPEC §5.5
   já trata isso explicitamente).
+- **Dado pessoal de representante de fornecedor ou responsável técnico** — CPF, telefone, e-mail
+  e assinatura de pessoa natural que não é condômino, típicos de proposta comercial e de laudo.
+  Nome do profissional e registro CREA/CFT num laudo podem ficar autenticado, porque são a própria
+  validade do laudo; contato direto e CPF, não.
 - **Dado de saúde** — qualquer menção a condição médica (ex.: justificativa de afastamento,
   laudo de acessibilidade vinculado a pessoa) é dado sensível por definição legal (LGPD, art. 5º,
   II) e deve ser tratado como `restrito` por padrão, nunca extraído para busca geral.
@@ -214,4 +279,6 @@ visibilidade pública nem autenticado-geral — no máximo `conselho`, em regra 
 
 Quando um documento público ou autenticado (ata, balancete) contém trechos com esses dados
 misturados ao conteúdo normativo, a indexação deve extrair o texto normativo e excluir — não
-apenas ocultar na interface — o trecho sensível do índice de busca geral.
+apenas ocultar na interface — o trecho sensível do índice de busca geral. Atenção à D13: se o
+trecho sensível exigir de fato restrição, quem desce é **o documento**, e as demais páginas sobem
+por override — nunca o contrário.

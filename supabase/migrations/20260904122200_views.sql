@@ -51,7 +51,7 @@ comment on view public.vw_orcado_realizado is
   'bigint (ADR-0010). SUM já sai correto sem filtro: estorno é lançamento com valor negativo '
   '(ADR-0011).';
 
-revoke all on public.vw_orcado_realizado from public, anon, authenticated;
+revoke all on public.vw_orcado_realizado from public, anon, authenticated, service_role;
 grant select on public.vw_orcado_realizado to authenticated;
 
 -- ============================================================================
@@ -69,7 +69,7 @@ from public.lancamentos l
 join public.contas c on c.id = l.conta_id
 group by l.conta_id, c.codigo, c.nome, l.data_competencia;
 
-revoke all on public.vw_realizado_por_conta from public, anon, authenticated;
+revoke all on public.vw_realizado_por_conta from public, anon, authenticated, service_role;
 grant select on public.vw_realizado_por_conta to authenticated;
 
 -- ============================================================================
@@ -90,14 +90,22 @@ select
   end as pct,
   count(*) filter (where status in ('atrasada', 'acordo')) as qtd_unidades_em_atraso
 from public.cobrancas
+-- V6 (auditor-rls, achado real): sem esta cláusula, QUALQUER JWT authenticated — inclusive um
+-- sem linha em `pessoas` — lia o agregado inteiro, porque a view não é security_invoker e
+-- não tinha checagem de papel nenhuma. GRANT de tabela para `authenticated` só garante que o
+-- ROLE do Postgres pode consultar; não substitui a checagem de "é de fato um autenticado do
+-- domínio", que só app.eh_autenticado() sabe responder (JWT com role=authenticated não implica
+-- pessoa cadastrada e ativa).
+where app.eh_autenticado()
 group by competencia;
 
 comment on view public.vw_inadimplencia_agregada is
   'EXCEÇÃO a "security_invoker=true em todas" (docs/schema.md §14) — deliberada, ver cabeçalho '
   'deste arquivo. Nunca projeta unidade_id nem pessoa_id: é o que a distingue de '
-  'vw_inadimplencia_nominal. GRANT só para authenticated, nunca anon.';
+  'vw_inadimplencia_nominal. GRANT só para authenticated, nunca anon; e a própria view checa '
+  'app.eh_autenticado() (V6) — GRANT de tabela sozinho não bastava.';
 
-revoke all on public.vw_inadimplencia_agregada from public, anon, authenticated;
+revoke all on public.vw_inadimplencia_agregada from public, anon, authenticated, service_role;
 grant select on public.vw_inadimplencia_agregada to authenticated;
 
 -- ============================================================================
@@ -130,7 +138,7 @@ comment on view public.vw_inadimplencia_nominal is
   'Leitura nominal por gestão PRECISA gerar audit.acesso (SPEC §5.5) — a cargo da rotina de '
   'servidor que consulta esta view, não da view em si (não existe "AFTER SELECT" em SQL).';
 
-revoke all on public.vw_inadimplencia_nominal from public, anon, authenticated;
+revoke all on public.vw_inadimplencia_nominal from public, anon, authenticated, service_role;
 grant select on public.vw_inadimplencia_nominal to authenticated;
 
 -- ============================================================================
@@ -148,7 +156,7 @@ select
   end as cpf_mascarado
 from public.pessoas;
 
-revoke all on public.vw_pessoas_mascaradas from public, anon, authenticated;
+revoke all on public.vw_pessoas_mascaradas from public, anon, authenticated, service_role;
 grant select on public.vw_pessoas_mascaradas to authenticated;
 
 -- ============================================================================
@@ -163,7 +171,7 @@ select
 from public.documentos d
 where d.status = 'publicado';
 
-revoke all on public.vw_documentos_publicados from public, anon, authenticated;
+revoke all on public.vw_documentos_publicados from public, anon, authenticated, service_role;
 grant select on public.vw_documentos_publicados to anon, authenticated;
 
 -- ============================================================================
@@ -182,6 +190,9 @@ select
   (count(a.id) > 0) as tem_comprovante
 from public.lancamentos l
 left join public.lancamento_anexos a on a.lancamento_id = l.id
+-- V6 (mesmo achado de vw_inadimplencia_agregada): sem isto, qualquer JWT authenticated sem
+-- linha em pessoas lia esta view também.
+where app.eh_autenticado()
 group by l.id, l.data_competencia, l.conta_id, l.valor_centavos;
 
 comment on view public.vw_lancamentos_com_comprovante is
@@ -190,5 +201,5 @@ comment on view public.vw_lancamentos_com_comprovante is
   'enviado_por (esses continuam gestão-only, só acessíveis via lancamento_anexos direto ou '
   'signed URL). GRANT só para authenticated, nunca anon.';
 
-revoke all on public.vw_lancamentos_com_comprovante from public, anon, authenticated;
+revoke all on public.vw_lancamentos_com_comprovante from public, anon, authenticated, service_role;
 grant select on public.vw_lancamentos_com_comprovante to authenticated;

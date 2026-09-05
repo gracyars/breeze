@@ -27,9 +27,8 @@ extingue-se o direito. Sobrevivem, e não como sessão aberta:
   pedido fundamentado*, nunca para leitura contínua e indiscriminada.
 - **Prova de quitação do período.** Interesse real: o adquirente responde por débito do alienante
   (obrigação *propter rem*) e a cobrança prescreve em ~5 anos
-  `[NÃO CONFIRMADO — CC art. 1.345 e art. 206, §5º, I não verificados em fonte primária pela
-  skill condominio-legal; confirmar antes de usar em peça]`. É o que justifica **guardar** o
-  cadastro por 5 anos, não o que justifica dar-lhe login.
+  `[NÃO CONFIRMADO — CC art. 1.345 e art. 206, §5º, I; ver "Pendência de verificação" ao final]`.
+  É o que justifica **guardar** o cadastro por 5 anos, não o que justifica dar-lhe login.
 
 **Excesso, sem base legal nenhuma.** Ata do mês passado, balancete corrente, inadimplência
 agregada atual, contrato assinado depois da saída. A prestação de contas destina-se à **assembleia
@@ -72,10 +71,11 @@ registrar a venda — e isso o produto pode tornar *visível quando falta* (§5)
 `audit.log` só fica coberto se `actor` for **id**, nunca nome denormalizado — anonimizar `pessoas`
 de-identifica a trilha por consequência. **Verificar; se houver nome copiado, é achado novo.**
 
-**Correção à skill `lgpd-condominio` §6:** ela manda anonimizar *ao encerrar o vínculo*. Cedo
-demais — destrói a capacidade de cobrar débito remanescente, de responder pedido do titular e de
-provar quitação dentro dos 5 anos de guarda. Separar em dois estágios: **desativar em `fim`**,
-**anonimizar em `fim + 5 anos`**.
+**Correção à skill `lgpd-condominio` — feita.** A §6 mandava anonimizar *ao encerrar o vínculo*.
+Cedo demais: destrói a capacidade de cobrar débito remanescente, de responder pedido do titular e
+de provar quitação dentro dos 5 anos de guarda. A skill agora traz a §6-bis com o modelo de dois
+estágios, a lista fechada do que nunca se anonimiza e o item 10 do checklist ("o acesso a esse
+dado expira sozinho?").
 
 ## 5. Modelo pedido (regra; migração é do `eng-supabase`)
 
@@ -103,14 +103,34 @@ provar quitação dentro dos 5 anos de guarda. Separar em dois estágios: **desa
 
 Não bloqueiam F0: `motivo_fim`, alertas, rotina de anonimização, janela degradada (recusada).
 
+## Pendência de verificação — segue `[NÃO CONFIRMADO]`
+
+Tentei confirmar em fonte primária e **não consegui, por limitação de ferramenta**: esta sessão do
+`juridico-lgpd` não tem `Bash`, logo não roda o `curl` usado para montar a `condominio-legal`
+(WebFetch é bloqueado no Planalto). Também não há texto legal cacheado no repositório —
+`.claude/skills/condominio-legal/` tem apenas o `SKILL.md`. **Não confirmei e não vou parafrasear
+de memória**: citação legal inventada é o pior erro possível neste projeto.
+
+Para quem retomar, com `Bash` disponível:
+
+| A verificar | Onde | O que checar |
+|---|---|---|
+| CC art. 1.345 | `planalto.gov.br/ccivil_03/leis/2002/l10406compilada.htm` | Se o texto vigente diz que o adquirente responde pelos débitos do alienante, **inclusive multas e juros moratórios** |
+| CC art. 206, §5º, I | mesma URL | Se a prescrição de 5 anos alcança "dívidas líquidas constantes de instrumento público ou particular", e se isso cobre cota condominial (aqui a ponte é jurisprudencial, não textual — verificar no STJ, não no Planalto) |
+
+Se confirmarem, remover as marcas deste parecer **e** levar as duas linhas para a
+`condominio-legal` §4 (tabela de prazos de guarda) — sustentam o prazo e vão reaparecer.
+Se não confirmarem, deixar marcado: o veto e o prazo de 5 anos se apoiam em Lei 4.591/64
+art. 22, §1º, "g", CC art. 1.335 e LGPD art. 6º, III e 15, I — todos já verificados.
+
 ## Checklist acionável
 
-- [ ] `eng-supabase`: reescrever `app.eh_autenticado()` (C1) — **antes de produção**
+- [x] `juridico-lgpd`: corrigir skill `lgpd-condominio` (§6-bis, dois estágios, exceções, item 10)
+- [ ] `eng-supabase`: reescrever `app.eh_autenticado()` (C1) — **antes de produção** *(→ V8)*
 - [ ] `auditor-rls`: testes C2, negativo e positivo — **antes de produção**
 - [ ] `auditor-rls`: confirmar que `audit.log.actor` é id, não nome — **antes de produção**
 - [ ] `devops`: C3 no runbook — **antes de produção**
 - [ ] `eng-supabase`: `vinculos.motivo_fim`, `pessoas.anonimizada_em` — F1
 - [ ] `eng-supabase`: dois `tipos_alerta` do item 5.4 — F1
 - [ ] `eng-supabase`: rotina de anonimização + teste com data falsa — F1
-- [ ] `juridico-lgpd`: corrigir skill `lgpd-condominio` §6 (dois estágios) — F1
-- [ ] `juridico-lgpd`: confirmar CC art. 1.345 e art. 206, §5º, I em fonte primária — F1
+- [ ] *(bloqueado por falta de `Bash`)* confirmar CC art. 1.345 e art. 206, §5º, I — F1

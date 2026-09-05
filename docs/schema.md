@@ -26,6 +26,24 @@ ADR-0013 (auditoria), ADR-0014 (CPF), ADR-0015 (enum vs. domínio).
 | **D12** | Alerta "fundo sem ata" passa a se avaliar sobre `lancamentos.fundo`. **Removidas** `contas.fundo`, `contas.exige_deliberacao` e a conta de seed `2.12 Uso de fundos` |
 | **ADR-0017** | `cpf_enc` excluído por `GRANT SELECT` com lista de colunas. O `REVOKE SELECT (coluna)` que este documento trazia **não bloqueava nada** |
 | **D13 / ADR-0019** | **Invariante do piso:** `documentos.visibilidade` é no máximo tão permissiva quanto a página mais restritiva; override só amplia. Nova `app.ordem_visibilidade`; `tem_paginas_mistas` vira derivada; trava de chunk deixa de depender dela. Fecha V1 e V3 do `auditor-rls` |
+| **D14 / ADR-0020** | `parecer_signatarios.nome_signatario` + `qualificacao`: snapshot congelado na assinatura. **Única PII denormalizada do schema**, com critério de três testes para qualquer pedido futuro por analogia |
+| **D15 / ADR-0021** | **Invariante de dois lados:** toda invariante relacional exige matriz de caminhos de violação. Novo trigger em `documento_paginas` (invalida chunks ao reclassificar), novo trigger em `documentos` (piso ao afrouxar), correção do seed de `audit.verificar_cadeia` |
+| **D15 / ADR-0022** | Trigger impedindo desativar a última pessoa com papel `editor` vigente |
+| **D16 / ADR-0023** | **Predicado de autorização deve ser local.** Removidos `app.documento_tem_override()` e o ramo "misto" de `app.nivel_efetivo` — o nível de uma página deixa de depender de outras páginas. `tem_paginas_mistas` sai do caminho de segurança |
+
+> **Antes de escrever trigger de invariante que atravessa duas tabelas, leia o ADR-0021** — e
+> **preencha o formulário em [`invariantes/`](invariantes/README.md)**, que tem gate de CI.
+> A pergunta não é "como garanto isto aqui", é **"quais são todos os caminhos que podem violar
+> isto"**, e as linhas da matriz são **geradas pelo conjunto de dependência**, não imaginadas —
+> foi assim que o V10 perdeu três caminhos e o preenchimento achou um quarto.
+>
+> **Antes de escrever função chamada por policy, leia o ADR-0023.** `exists`, `count`, `min` ou
+> `max` sobre linhas que não são a avaliada é sinal de alerta: toda escrita naquelas linhas vira
+> uma mudança de autorização que ninguém percebeu ter feito.
+
+> **Antes de denormalizar qualquer dado pessoal, leia o critério do ADR-0020.** Exige os três
+> testes: o dado é elemento do ato (não conveniência); há base legal nomeável que impede eliminar;
+> e o valor certo é o do momento do ato. Qualquer "não" ⇒ FK para `pessoas`.
 
 > As migrações de D11 e ADR-0017 já estão aplicadas. O diff de D12 está com o `eng-supabase`,
 > a aplicar depois do veredito do `auditor-rls` — este documento já reflete o estado final.
@@ -262,9 +280,8 @@ returns int language sql immutable as $$
                 when 'autenticado' then 2 when 'publico' then 3 end
 $$;
 
--- Dado um nível já resolvido, este papel enxerga? NULL (página não classificada em documento
--- misto) cai no ELSE => false. FALHA FECHADO — mantido por conservadorismo; desde o ADR-0019
--- não é mais o que segura o modelo de pé (herdar o piso já é seguro).
+-- Dado um nível já resolvido, este papel enxerga? NULL cai no ELSE => false (falha fechado).
+-- [ADR-0023] O ramo "documento misto" que produzia NULL FOI REMOVIDO de nivel_efetivo — ver abaixo.
 create or replace function app.nivel_visivel(p_nivel public.visibilidade_documento, p_documento_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
   select case p_nivel
@@ -279,18 +296,34 @@ returns boolean language sql stable security definer set search_path = '' as $$
   end
 $$;
 
--- Nível efetivo de UMA página: override explícito, ou herança do documento — EXCETO em documento
--- marcado tem_paginas_mistas, onde página sem override não herda nada (devolve NULL).
+-- Nível efetivo de UMA página: override explícito da própria página, ou herança do piso do
+-- documento. **PREDICADO LOCAL** (ADR-0023): lê a linha avaliada e o documento dela. Mais nada.
+--
+-- [ADR-0023 / D16] Removido o ramo "se o documento tem override em ALGUMA página, então página sem
+-- classificação não herda nada", junto com a função app.documento_tem_override().
+-- Por quê: era NÃO-LOCAL — o nível da página 5 dependia do que existia na página 3. Medido pelo
+-- auditor na 3ª rodada: apagar a página 3 fazia 5 e 6 passarem de invisíveis a `publico`.
+-- CONTEÚDO FECHADO ABRINDO SOZINHO POR CAUSA DE UM DELETE EM OUTRA LINHA.
+-- A anomalia era simétrica: sob a invariante do piso, num documento `publico` o único override
+-- possível é `publico` (no-op) — e marcá-lo FECHAVA todas as demais páginas.
+-- E o ramo não protegia nada: com o piso garantido (ADR-0019), `documentos.visibilidade` É o nível
+-- mais restritivo do documento, logo herdá-lo é seguro por construção. Era redundância — e
+-- redundância que introduz dependência não-local não é proteção extra, é superfície extra.
 create or replace function app.nivel_efetivo(p_documento_id uuid, p_pagina int)
 returns public.visibilidade_documento language sql stable security definer set search_path = '' as $$
-  select case when d.tem_paginas_mistas then dp.visibilidade
-              else coalesce(dp.visibilidade, d.visibilidade)
-         end
+  select coalesce(dp.visibilidade, d.visibilidade)
     from public.documentos d
     left join public.documento_paginas dp
       on dp.documento_id = d.id and dp.pagina = p_pagina
    where d.id = p_documento_id
 $$;
+-- DEPENDÊNCIA CRÍTICA E EXPLÍCITA: esta função só é segura enquanto a invariante do piso valer.
+-- Aceito, e melhor que a alternativa: a dependência vira UMA invariante nomeada, testada e com
+-- matriz de caminhos (docs/invariantes/INV-03), em vez de um ramo defensivo que ninguém sabia
+-- enumerar. Dependência explícita e testada > defesa implícita.
+--
+-- `documentos.tem_paginas_mistas` permanece SÓ como sinalizador de intenção da curadoria para a
+-- UI. NÃO participa de nenhuma decisão de segurança — nem por OR.
 
 -- ENTRADA 1 — arquivo/linha inteiro. Usada por: documentos, storage.objects do bucket
 -- 'documentos'. O PDF cru NÃO é fatiado: baixar o arquivo inteiro continua governado pelo nível
@@ -373,6 +406,23 @@ Triggers nas **duas** direções — validar só um lado deixa a porta aberta pe
 -- documentos BEFORE UPDATE OF visibilidade:
 --   rejeita se ordem(NEW.visibilidade) > min(ordem(pagina.visibilidade)) das páginas classificadas.
 ```
+
+> **ACHADO V3-R — e a lição de método que vale mais que o conserto.** Este bloco já dizia "nas duas
+> direções" desde o ADR-0019. A implementação fez **uma**: o piso era validado ao escrever a
+> página, e subir `documentos.visibilidade` depois quebrava a invariante sem ninguém checar — texto
+> negado, PDF inteiro liberado.
+>
+> Prosa em documento de desenho não sobrevive à implementação. Por isso a matriz de caminhos do
+> ADR-0021 é **célula de checklist**, não frase de parágrafo:
+>
+> | Caminho | Estado |
+> |---|---|
+> | `INSERT` em `documento_paginas` com `visibilidade` | guardado |
+> | `UPDATE` de `documento_paginas.visibilidade` | guardado (piso) + invalida chunks (V1-R) |
+> | `UPDATE` de `documentos.visibilidade` | **guardado (V3-R)** |
+> | `INSERT` de `documentos` já mais permissivo que páginas | impossível: não há páginas ainda |
+> | `DELETE` de `documento_paginas` | aceito: remover página não afrouxa o piso |
+> | Escrita direta por `service_role` (worker) | aceito com motivo: o worker não escreve `visibilidade` |
 
 **Ordem de operações na importação:** para documento que já nasce misto, define-se primeiro o nível
 do documento (o piso), depois os overrides. O pipeline de F1 precisa seguir essa ordem, senão a
@@ -537,6 +587,18 @@ create index papeis_pessoa_fim_idx on public.papeis (pessoa_id, mandato_fim);
 create unique index papeis_vigente_uk on public.papeis (pessoa_id, papel) where mandato_fim is null;
 -- Índice que app.tem_papel() percorre a cada avaliação de policy:
 create index papeis_papel_vigente_idx on public.papeis (papel, mandato_inicio, mandato_fim);
+
+-- [ADR-0022 / V10] Trigger: o ÚLTIMO `editor` vigente não pode ser desativado.
+-- Não é vazamento, é indisponibilidade IRREVERSÍVEL: com editora única (D4), ela pode se
+-- auto-desativar (pessoas.ativa = false) ou deixar o mandato expirar, e ninguém reverte —
+-- service_role não tem UPDATE em pessoas nem papeis (ADR-0012 item 6, e isso está CERTO).
+-- Guarda nos dois caminhos que produzem o mesmo estado (matriz do ADR-0021):
+--   pessoas  BEFORE UPDATE OF ativa       -> rejeita se é a última pessoa com editor vigente
+--   papeis   BEFORE UPDATE OF mandato_fim / BEFORE DELETE -> idem
+-- A mensagem precisa DIZER A SAÍDA ("conceda `editor` a outra pessoa antes de encerrar este
+-- mandato"), não só barrar — trava sem saída indicada vira contorno criativo.
+-- Limite honesto: isto resolve o ACIDENTE, não o ataque. Conta comprometida continua exigindo
+-- D9 (códigos de recuperação impressos) + a trilha do ADR-0013.
 
 comment on table public.papeis is
   'RLS: pessoa lê os PRÓPRIOS papéis; gestão lê todos; escrita só editor com AAL2.
@@ -820,6 +882,38 @@ create trigger chunks_valida_visibilidade_uniforme
 -- CONSEQUÊNCIA PARA O PIPELINE (F1): o chunker precisa respeitar fronteira de visibilidade ao
 -- segmentar documento misto. Se não respeitar, o trigger rejeita e o documento não indexa.
 -- É requisito do pipeline, não detalhe de banco.
+--
+-- A MENSAGEM DE EXCEÇÃO DESTE TRIGGER DEVE CITAR docs/adr/0021-invariante-de-dois-lados.md.
+-- É o que a pessoa lê às duas da manhã quando a inserção falha — vale mais que qualquer índice
+-- de documentação (ADR-0021 §4).
+```
+
+**O segundo caminho — `chunks_invalida_por_reclassificacao`** (ADR-0021, conserto do **V1-R**):
+
+```sql
+-- ACHADO V1-R: o trigger acima roda ao INSERIR o chunk. Nada revalidava quando
+-- documento_paginas.visibilidade mudava DEPOIS — e essa é a ordem real do pipeline: o worker
+-- chunkiza, a curadoria classifica em seguida. Resultado medido: texto sigiloso servido pela
+-- busca com a chave `anon`.
+--
+-- Por que NÃO é só "adicionar um trigger que rejeita" (ADR-0021, nível 2 vs. nível 3): rejeitar a
+-- reclassificação quebraria o fluxo de curadoria que motivou o modelo inteiro (ADR-0018).
+-- Quando bloquear o segundo caminho impede um fluxo legítimo e frequente, a saída é INVALIDAR o
+-- derivado, não barrar o fluxo.
+create trigger chunks_invalida_por_reclassificacao
+  after update of visibilidade on public.documento_paginas
+  for each row execute function public.tg_invalida_chunks_da_pagina();
+-- A função: DELETE dos chunks cujo [pagina_ini, pagina_fim] intersecta NEW.pagina,
+--            + reenfileiramento do documento em job.fila (idempotente por sha256+versao_pipeline).
+--
+-- APAGAR, NÃO MARCAR COMO INVÁLIDO. Um flag `invalidado_em` obrigaria toda policy e toda consulta
+-- de busca a lembrar de `and invalidado_em is null` — mais um predicado que alguém esquece, que é
+-- exatamente o erro que o ADR-0021 trata. Linha apagada não vaza.
+-- Custo honesto: a busca perde aqueles trechos até o reprocessamento terminar. Lacuna temporária
+-- de busca é preferível a janela de vazamento — e a UI precisa dizer "reindexando", não mostrar
+-- acervo incompleto sem explicação.
+-- deliberacoes.chunk_id já é `on delete set null`, com âncora estável em (documento_id, pagina) +
+-- trecho_literal (ADR-0016): a citação não quebra.
 ```
 
 ```
@@ -1378,10 +1472,56 @@ create table public.pareceres (
 
 create table public.parecer_signatarios (
   parecer_id  uuid not null references public.pareceres(id) on delete cascade,
+  -- FK PRESERVADA: chave técnica dos agregados e da desambiguação de homônimo
+  -- (juridico-lgpd §4: "pessoa_id: preservar sempre"). A FK liga; o snapshot atesta.
   pessoa_id   uuid not null references public.pessoas(id) on delete restrict,
   assinado_em timestamptz,
+
+  -- [ADR-0020 / D14] SNAPSHOT DO ATO — única PII denormalizada autorizada no schema.
+  -- Por quê: a identidade do signatário existia só em pessoas.nome, por FK. Anonimizado o
+  -- ex-morador (rotina de fim + 5 anos), o signatário do parecer virava "ANONIMIZADO" — e parecer
+  -- sem signatário identificável não tem valor probatório nenhum. Com editora única (D4), o
+  -- parecer do conselho É a peça de contrapeso; perder o nome não degrada o registro, destrói a
+  -- função dele.
+  -- Base legal da retenção contra pedido de eliminação: LGPD art. 16, I (obrigação legal), porque
+  -- a assinatura é a validade do ato — CC art. 1.356 (juridico-lgpd §4, lista do que nunca se
+  -- anonimiza).
+  -- LIMITE ESTREITO, por necessidade (LGPD art. 6º, III): congela-se o MÍNIMO que torna o ato
+  -- atribuível. Nome e qualificação, sim. CPF, e-mail, telefone, unidade: PROIBIDO acrescentar
+  -- aqui — nada disso é elemento da assinatura, e usar exceção estreita como guarda-chuva é o
+  -- abuso clássico do art. 16.
+  nome_signatario text,   -- congelado quando assinado_em deixa de ser nulo
+  qualificacao    text,   -- 'Conselho fiscal, mandato 2026/2028' — em que qualidade assinou
+
   primary key (parecer_id, pessoa_id)
 );
+
+-- Triggers obrigatórios (ADR-0020):
+--  1) parecer_signatarios_congela_snapshot — BEFORE INSERT OR UPDATE:
+--     quando assinado_em passa de NULL a preenchido, copia pessoas.nome e a qualificação do papel
+--     vigente. ANTES DA ASSINATURA NÃO HÁ ATO, logo não há o que congelar — rascunho com
+--     signatário previsto não gera retenção de PII.
+--  2) parecer_signatarios_snapshot_imutavel — BEFORE UPDATE:
+--     rejeita alteração de nome_signatario/qualificacao já preenchidos. Snapshot reescrevível não
+--     é snapshot. Nome corrigido em pessoas (casamento, retificação) NÃO propaga para parecer já
+--     assinado — o ato foi assinado com aquele nome; retificação é anotação nova, nunca reescrita.
+--
+-- A rotina de anonimização NÃO precisa conhecer exceção: ela atua em `pessoas`, e estas colunas
+-- não vivem lá. É a diferença entre depender de um WHERE ... NOT IN (signatários) que alguém
+-- precisa escrever certo e não haver nada a excluir.
+
+comment on column public.parecer_signatarios.nome_signatario is
+  'ADR-0020: snapshot do nome no momento da assinatura. PII denormalizada AUTORIZADA em caráter
+   excepcional e de escopo fechado — ver o critério de três testes em docs/adr/0020. Não é
+   precedente: denormalizar PII exige que o dado seja ELEMENTO DO ATO (T1), tenha base legal que
+   impeça a eliminação (T2) e deva ficar congelado no tempo (T3). Os três, não a maioria.';
+
+comment on table public.parecer_signatarios is
+  'RLS: mesma de pareceres. Escrita: conselho (o próprio signatário registra a assinatura).
+   Por quê o snapshot (ADR-0020, D14): sem ele, anonimizar o ex-conselheiro apagava a identidade
+   de quem assinou o parecer. Um conselheiro que vende o apartamento é, ao mesmo tempo, titular
+   com direito à eliminação (LGPD art. 18) e signatário de ato cuja assinatura é a validade dele
+   (CC art. 1.356). O snapshot separa as duas coisas: o cadastro é eliminado, o ato permanece.';
 
 comment on table public.pareceres is
   'RLS: rascunho SÓ conselho e editor; parecer emitido, leitura para autenticado. Escrita: conselho.
@@ -1566,6 +1706,16 @@ create index acesso_recurso_idx on audit.acesso (recurso, ts desc);
 -- audit.verificar_cadeia(desde bigint default 1, ate bigint default null)
 --   recalcula o encadeamento e devolve a PRIMEIRA linha inconsistente (ou nada).
 --   Roda semanalmente, antes de gerar a âncora, e sob demanda.
+--
+-- ACHADO V5-R (ADR-0021) — `seq` DÁ ORDEM, NÃO ENDEREÇO.
+-- A função semeava o hash anterior com `where seq = desde - 1`, tratando um ordinal como
+-- endereço. Identidade e sequência NUNCA prometem contiguidade: toda transação abortada queima um
+-- nextval. Com um buraco, a linha "anterior" não existe, o seed fica nulo e o verificador acusa
+-- quebra falsa em cadeia intacta — e alarme falso permanente é o mesmo que nenhuma detecção,
+-- porque adulteração real fica indistinguível do ruído.
+--   errado: select hash_registro from audit.log where seq = desde - 1;
+--   certo : select hash_registro from audit.log where seq < desde order by seq desc limit 1;
+-- Regra reutilizável: onde for preciso "a linha anterior", peça por ORDEM, nunca por aritmética.
 ```
 
 ---
@@ -1709,6 +1859,17 @@ Verificações que precisam passar antes de considerar a baseline pronta:
       mais restritivo é subconjunto de quem enxerga o mais permissivo — em especial
       `conselho ⊂ restrito` (o nome engana)
 - [ ] não existe documento baixável por um papel que não possa ler alguma de suas páginas
+- [ ] anonimizar `pessoas` **não** apaga `parecer_signatarios.nome_signatario` (ADR-0020)
+- [ ] `UPDATE` de `nome_signatario`/`qualificacao` já preenchidos é rejeitado
+- [ ] linha de signatário sem `assinado_em` tem snapshot **nulo** (não há ato, não há retenção)
+- [ ] **[V3-R]** afrouxar `documentos.visibilidade` acima de uma página já classificada é rejeitado
+- [ ] **[V1-R]** reclassificar `documento_paginas.visibilidade` **apaga** os chunks que intersectam
+      a página e reenfileira o documento — e o chunk antigo não é legível no intervalo
+- [ ] **[V5-R]** `verificar_cadeia` não acusa quebra numa cadeia com buraco de `seq`
+      (teste: abortar uma transação de propósito, queimar um `nextval`, e verificar)
+- [ ] **[V10]** desativar a última pessoa com `editor` vigente falha; com duas, passa
+- [ ] toda invariante relacional do schema tem a **matriz de caminhos** no comentário da sua
+      migração, sem célula vazia (ADR-0021)
 - [ ] nenhuma policy de `documento_paginas`, `chunks` ou `deliberacoes` chama
       `app.documento_visivel` (entrada errada — ver tabela normativa da §4)
 - [ ] `insert` de documento tipo `ata_assembleia` com `visibilidade = 'publico'` é rejeitado

@@ -33,6 +33,13 @@ comment on table job.fila is
 -- SELECT ... FOR UPDATE SKIP LOCKED com a credencial própria do worker (não authenticated/anon).
 alter table job.fila enable row level security;
 alter table job.fila force row level security;
-revoke all on job.fila from public, anon, authenticated;
--- Sem GRANT, sem policy: mesmo que o schema algum dia entrasse em exposed_schemas por engano,
--- esta tabela continuaria inacessível a anon/authenticated.
+revoke all on job.fila from public, anon, authenticated, service_role;
+-- Sem GRANT a anon/authenticated, sem policy: mesmo que o schema algum dia entrasse em
+-- exposed_schemas por engano, esta tabela continuaria inacessível a esses dois papéis.
+-- V4 (auditor-rls, achado real): "consumida por worker com credencial própria" não estava
+-- declarado em lugar nenhum — nem USAGE de schema, nem GRANT de tabela para service_role, que é
+-- de fato quem consome (SELECT ... FOR UPDATE SKIP LOCKED), enfileira e atualiza status/lease.
+-- service_role tem BYPASSRLS (ignora a FORCE ROW LEVEL SECURITY acima por construção), mas
+-- GRANT de tabela é gate SEPARADO — sem ele, mesmo service_role batia em permission denied.
+grant usage on schema job to service_role;
+grant select, insert, update, delete on job.fila to service_role;

@@ -71,7 +71,7 @@ não podem divergir.
 | `questionamentos` | lancamento_id, autor_id, texto, status, resposta, respondido_por, ts | `(status)` | `conselho` e `editor` |
 | `tipos_alerta` | codigo, nome, severidade_padrao, descricao_regra, `requer_historico_meses` | pk textual | leitura gestão; escrita `editor` |
 | `alertas` | tipo, severidade, lancamento_id/contrato_id/fornecedor_id, detalhe jsonb, status, `chave_dedupe unique`, ts | `(status, severidade)` | `conselho` e `editor` |
-| `pareceres`, `parecer_signatarios` | competencia, versao, texto, conclusao, status, signatários | `unique(competencia,versao)` | rascunho: gestão; emitido: autenticados. Única escrita do `conselho` |
+| `pareceres`, `parecer_signatarios` | competencia, versao, texto, conclusao, status; signatário: pessoa_id **+ `nome_signatario` e `qualificacao` congelados na assinatura** | `unique(competencia,versao)` | rascunho: gestão; emitido: autenticados. Única escrita do `conselho` |
 | `sinonimos` | termo, termo_normalizado, expansoes[] | `unique(termo_normalizado)` | leitura livre; escrita `editor` |
 | `configuracoes` | chave pk, valor jsonb, publica | pk | linha `publica`: autenticados; demais: gestão. **Limiar de alerta vive aqui, não em código** |
 | `job.fila` | tipo, payload, status, tentativas, disponivel_em, `chave_idempotencia unique` | parcial `status='pendente'` | schema `job` **fora do PostgREST**; só o worker |
@@ -106,6 +106,18 @@ páginas — o corpo continua legível e citável, e o arquivo acompanha sua pá
 `tem_paginas_mistas` é **derivada** (ligada por trigger ao surgir o primeiro override), nunca uma
 caixinha que alguém precisa lembrar de marcar para a trava funcionar. Detalhes em ADR-0018,
 ADR-0019 e `docs/schema.md`.
+
+**PII denormalizada: uma exceção, com critério fechado.** O nome do signatário de parecer é
+copiado para `parecer_signatarios` e congelado no momento da assinatura. É a **única** PII
+denormalizada do schema. Motivo: a identidade do signatário existia só por chave estrangeira para
+`pessoas`, e a anonimização do ex-morador (§7) transformava o signatário em "ANONIMIZADO" —
+parecer sem signatário identificável não tem valor probatório, e com editora única (D4) o parecer
+do conselho é justamente a peça de contrapeso. Base legal para reter contra pedido de eliminação:
+LGPD art. 16, I, porque a assinatura é a validade do ato (CC art. 1.356). Limite estreito, por
+necessidade (LGPD art. 6º, III): congela-se nome e qualificação, **nunca** CPF, e-mail, telefone
+ou unidade. **Não é precedente** — qualquer outra denormalização de dado pessoal exige os três
+testes do ADR-0020 (o dado é elemento do ato; há base legal que impede eliminar; o valor certo é o
+do momento do ato), e qualquer "não" significa chave estrangeira.
 
 **Âncora de citação.** Chunk é derivado e regenerável: o pipeline é idempotente e reprocessar
 reescreve a segmentação (§3). Portanto nenhuma citação persistida é ancorada em `chunk_id`. A
@@ -165,6 +177,22 @@ valer hoje, sem esperar a expiração do token. Ver ADR-0003 e ADR-0012.
 6. **Indexação** — `tsv` por coluna generated; embeddings em lote. Status → `indexado`.
 
 Idempotente: job re-executável por `sha256` + versão do pipeline. Reprocessar tudo deve ser um comando.
+
+**Aviso a quem for escrever o chunker — você vai encontrar isto.** A ordem real do fluxo é
+**chunkizar primeiro, classificar visibilidade depois**: o worker indexa, a curadoria marca as
+páginas em seguida. Consequências que não são opcionais:
+
+1. Em documento misto, o chunk **não pode cruzar fronteira de visibilidade** — e com ~15% de
+   overlap (item 4 acima) ele atravessa página por construção. O trigger rejeita a inserção; o
+   chunker precisa quebrar na fronteira.
+2. **Reclassificar uma página apaga os chunks que a intersectam e reenfileira o documento.** Não é
+   erro, é o desenho: bloquear a reclassificação quebraria a curadoria, então o derivado é
+   invalidado em vez do fluxo. Durante o reprocessamento a busca fica com lacuna naquele documento,
+   e **a UI precisa dizer "reindexando"**, não mostrar acervo incompleto sem explicação.
+3. O reprocessamento é idempotente por `sha256` + `versao_pipeline`, então reenfileirar é seguro.
+
+Fundamento e o padrão por trás: `docs/adr/0021-invariante-de-dois-lados.md`. As mensagens de
+exceção dos triggers citam esse caminho — é onde você vai cair primeiro.
 
 ---
 
@@ -342,6 +370,10 @@ em branco, não por cor. A régua: deve parecer confiável como um extrato banc�
 - **Armadilha nº1:** RLS em `documentos` sem RLS equivalente em `chunks` e `documento_paginas` vaza conteúdo restrito pela busca. Espelhar sempre — e espelhar **chamando a mesma função**, nunca copiando o predicado, porque cópia diverge e diverge calado.
 - **Armadilha nº1, forma sutil (ADR-0018):** com visibilidade por página, há **duas** entradas de RLS. `app.documento_visivel(id)` governa a linha e o arquivo (bucket `documentos`); `app.pagina_visivel(documento_id, pagina)` governa `documento_paginas`, `chunks` (pela `pagina_ini`) e `deliberacoes`. Usar a entrada de documento onde cabia a de página publica a ata junto com o regimento embutido. O núcleo do mapeamento nível → papel continua em uma função só (`app.nivel_visivel`). Página sem classificação em documento misto **nega por padrão**, e chunk não cruza fronteira de visibilidade.
 - **Restrição por página é ilusória enquanto o arquivo é baixável (ADR-0019).** Resolver a granularidade no índice e esquecer o objeto original é pior que não ter a funcionalidade: dá sensação de controle. Invariante obrigatória: **`documentos.visibilidade` é o piso** — no máximo tão permissiva quanto sua página mais restritiva — garantida por trigger nas duas direções (ao classificar página e ao afrouxar documento). Ordem de permissividade: `conselho < restrito < autenticado < publico`; **`restrito` é mais permissivo que `conselho`** apesar do nome, e inverter os dois deixa página de conselho sair pelo arquivo de uma unidade.
+- **Predicado de autorização deve ser local (ADR-0023).** O valor pode depender da linha avaliada, das linhas que a definem por chave estrangeira e do sujeito da sessão — de mais nada. Quando depende de outras linhas, **toda escrita naquelas linhas é uma mudança de autorização**, ainda que ninguém a tenha chamado assim: foi um `DELETE` numa página que abriu sozinhas outras duas. `exists`/`count`/`min` dentro de função chamada por policy é sinal de alerta — exige classificar a dependência como *constitutiva* (as outras linhas **são** a decisão: `papeis`, `vinculos`, `documento_unidades`) ou *modal* (só decidem como a regra se aplica). Modal é a espécie que vaza, e a primeira pergunta é como eliminá-la. **Nunca monotonizar predicado constitutivo** — mandato que não expira contraria o veto do `juridico-lgpd` de que o acesso cessa em `vinculos.fim` + 0 dias.
+- **Redundância só é defesa quando é local.** Camada de proteção redundante que introduz dependência não-local não é proteção extra, é superfície extra — foi exatamente o que vazou na 3ª rodada.
+- **Invariante entre duas tabelas exige guarda nos dois lados (ADR-0021)**, e o artefato que garante isso é `docs/invariantes/` — formulário com células, vocabulário fechado e gate de CI, não regra escrita. Validar a escrita de um lado e não revalidar quando o outro muda foi a causa de três vazamentos independentes. `CHECK` é de uma linha só; assim que a invariante atravessa tabelas, a completude da guarda vira enumeração manual — e humano enumera o caminho que está escrevendo agora. Regra: antes de escrever o trigger, monte a **matriz de caminhos de violação** `(tabela × operação)`, mais os caminhos não-DML (escrita por `service_role`, restore, propriedade assumida por leitor). Célula vazia é bug. E `seq` dá **ordem, não endereço**: "a linha anterior" se pede por ordenação, nunca por `seq - 1` — sequência não promete contiguidade.
+- **Falha irreversível se torna impossível, não documentada (ADR-0022).** O último `editor` vigente não pode ser desativado: com editora única (D4), um `UPDATE` de uma linha fecharia o sistema para sempre, com o acervo dentro. Mesmo princípio da D9.
 - **Trava de segurança não pode depender de flag marcada à mão.** `tem_paginas_mistas` era autoral; quando não era marcada, a trava de fronteira de chunk não rodava e o chunk vazava pela busca, sem login. Agora é derivada por trigger, e a trava de chunk roda sempre que houver override no intervalo — não "quando a flag estiver ligada". Mesma lição de §5.3: regra de proteção avaliada sobre o fato, nunca sobre uma marcação que alguém precisa lembrar de fazer.
 - **`REVOKE` de coluna não esconde coluna (ADR-0017).** `REVOKE SELECT (col) ON tabela FROM role` **não subtrai** de um `GRANT SELECT ON tabela`: ACL de tabela e de coluna são união, em qualquer ordem. O comando não falha, não avisa e não tem efeito — foi a chegada mais perto que o projeto esteve de expor `cpf_enc` a todo autenticado. A única forma real de excluir coluna é nunca conceder `SELECT` de tabela inteira e usar `GRANT SELECT (lista)`. Consequência aceita: coluna nova fica invisível até entrar na lista.
 - **Anexos financeiros** em bucket próprio, acesso só por signed URL de TTL curto (60–300s) gerada no servidor após checagem de papel. Nunca embutida em página cacheada na CDN.
@@ -350,7 +382,7 @@ em branco, não por cor. A régua: deve parecer confiável como um extrato banc�
 - **Base legal LGPD:** obrigação legal e legítimo interesse (dever de prestar contas do síndico, **Código Civil art. 1.348, VIII** — confirmado em fonte primária), **não** consentimento. Minimização: CPF em claro visível apenas ao `editor`; para o `conselho`, sempre mascarado.
 - **Inadimplência nominal jamais é exposta a moradores.** Morador vê apenas a própria unidade.
 - **Visibilidade pública:** por padrão, apenas convenção e regimento (normativos e impessoais). Ata e balancete exigem autenticação — contêm nome, unidade e às vezes CPF. Se a decisão for publicar acervo aberto, é obrigatória etapa de redação/anonimização antes da publicação. *Ver decisão pendente nº1 no briefing.*
-- **Retenção:** piso legal de 5 anos vem da **Lei 4.591/64, art. 22, §1º, alínea "g"** — único piso explícito de guarda documental condominial, que sobreviveu à derrogação pelo Código Civil. Atas, convenção e laudos permanentes por **decisão de produto**, não por obrigação legal comprovada. Log de acesso (`audit.acesso`) 6 meses; `audit.log` é permanente e não é expurgável. Guarda de folha, ponto e registro de empregados: `[NÃO CONFIRMADO — verificar]`. Atenção: a Lei 8.212/91 art. 32, §11 **não diz mais "dez anos"** desde a Lei 11.941/2009 — hoje é "até que ocorra a prescrição"; quase toda fonte secundária de contabilidade ainda repete os 10 anos. Rotina de anonimização de ex-morador preserva agregados e apaga PII.
+- **Retenção:** piso legal de 5 anos vem da **Lei 4.591/64, art. 22, §1º, alínea "g"** — único piso explícito de guarda documental condominial, que sobreviveu à derrogação pelo Código Civil. Atas, convenção e laudos permanentes por **decisão de produto**, não por obrigação legal comprovada. Log de acesso (`audit.acesso`) 6 meses; `audit.log` é permanente e não é expurgável. Guarda de folha, ponto e registro de empregados: `[NÃO CONFIRMADO — verificar]`. Atenção: a Lei 8.212/91 art. 32, §11 **não diz mais "dez anos"** desde a Lei 11.941/2009 — hoje é "até que ocorra a prescrição"; quase toda fonte secundária de contabilidade ainda repete os 10 anos. Rotina de anonimização de ex-morador preserva agregados e apaga PII — **com uma lista fechada do que nunca se anonimiza** (`docs/juridico/off-boarding-ex-morador.md` §4): parecer e seus signatários, nome em ata/deliberação/voto, lançamentos e cobranças do período, e `audit.log`. A assinatura de parecer é preservada por **snapshot congelado** em `parecer_signatarios`, não por exceção na rotina — regra que depende de alguém verificar antes de rodar não é regra, é intenção (ADR-0020).
 - **Backup:** backup do provedor não é backup. `pg_dump` semanal + espelho do Storage em conta separada, com restore testado trimestralmente.
 
 ---

@@ -191,6 +191,13 @@ prática, a saída **não** é afrouxar a invariante, é a opção (c): gerar um
 
 ## Status
 
+**Corrigido pelo ADR-0023 em um ponto:** a regra fail-closed ("página sem classificação em
+documento misto não herda") foi mantida aqui *por conservadorismo*, com a observação explícita de
+que a invariante do piso já a tornava redundante. Essa camada redundante introduziu um predicado
+não-local (`documento_tem_override`) que vazou na 3ª rodada. Lição incorporada: **redundância só é
+defesa quando é local.** A invariante do piso, que é o núcleo deste ADR, permanece — e passa a ser
+a única coisa que sustenta a herança.
+
 Aceito, 2026-09-04. Emenda o ADR-0018 (que permanece Aceito; sua premissa de que a granularidade
 por página bastava é corrigida aqui). Registrado em `docs/04-DECISOES.md` como D13.
 Fecha V3 e V1 do veredito do `auditor-rls`; implementação com o `eng-supabase`.

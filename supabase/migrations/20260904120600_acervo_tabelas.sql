@@ -50,11 +50,20 @@ create table public.documentos (
   ocr_aplicado   boolean not null default false,
   status         public.status_documento not null default 'pendente',
   visibilidade   public.visibilidade_documento not null default 'autenticado',
-  -- [Correção 2026-09-04] true quando o documento embute conteúdo de nível de exposição
-  -- diferente do padrão (ex.: ata que embute o regimento inteiro como anexo). Enquanto true,
-  -- uma página SEM `documento_paginas.visibilidade` explícita NÃO herda `visibilidade` deste
-  -- documento — fica invisível a quem não é gestão até ser classificada (app.nivel_efetivo).
-  -- Na dúvida, o mais restritivo vence — modelado aqui, não por convenção de curadoria.
+  -- [ADR-0023/D16] Sinalizador de INTENÇÃO/curadoria PURO — true quando o documento embute
+  -- conteúdo de nível de exposição diferente do padrão (ex.: ata que embute o regimento como
+  -- anexo). A editora pode ligá-la cedo para declarar intenção; um trigger (ver
+  -- 20260904120800_visibilidade_documento_funcoes.sql) liga-a sozinha assim que a primeira
+  -- página ganha override e NUNCA a desliga automaticamente.
+  -- ATENÇÃO: esta coluna NUNCA governou decisão de segurança, e desde ADR-0023/D16 nem o
+  -- CONCEITO que ela representa ("documento misto") participa mais de app.nivel_efetivo() —
+  -- existiu ali como `app.documento_tem_override()`, um `exists` sobre outras páginas do mesmo
+  -- documento (predicado NÃO LOCAL, espécie modal), e foi esse `exists` que vazou na 3ª rodada
+  -- do auditor-rls (apagar a única página com override reabria páginas não classificadas que
+  -- nada tinham a ver com a página apagada). A correção não foi consertar o predicado — foi
+  -- eliminar o conceito: sob a invariante do piso (ADR-0019), herdar o piso do documento para
+  -- página sem override é sempre seguro, então o `exists` nunca protegia nada. Esta coluna
+  -- sobrevive só como sinal de UI/curadoria.
   tem_paginas_mistas boolean not null default false,
   versao_pipeline int not null default 1,   -- idempotência do reprocessamento (SPEC §3)
   metadados      jsonb not null default '{}'::jsonb,  -- extração da classificação (SPEC §3.5)
@@ -109,9 +118,10 @@ comment on table public.documentos is
   'espelham esta regra CHAMANDO AS MESMAS FUNÇÕES — nunca copiando o predicado (SPEC §7, '
   'armadilha nº1).';
 comment on column public.documentos.tem_paginas_mistas is
-  'Correção 2026-09-04 (docs/inventario-acervo.md): documento com conteúdo de exposição mista '
-  '(ex.: ata que embute o regimento). Página sem classificação própria não herda a visibilidade '
-  'do documento enquanto esta flag for true — falha fechado, nunca aberto.';
+  'Sinalizador de curadoria (ADR-0023/D16), NUNCA fonte de decisão de segurança — o conceito de '
+  '"documento misto" foi removido de app.nivel_efetivo() por não-localidade (era um exists sobre '
+  'outras páginas; vazou na 3ª rodada do auditor-rls). Liga sozinha por trigger ao primeiro '
+  'override; nunca desliga sozinha. A editora pode ligá-la antes, para declarar intenção.';
 
 -- ============================================================================
 -- documento_unidades — [ADR-0016 item 7]
@@ -161,10 +171,17 @@ comment on table public.documento_paginas is
   'em documentos sem RLS aqui entrega o conteúdo restrito inteiro por uma consulta trivial. '
   'Escrita: NENHUM papel de usuário. Só o worker, por service_role — é saída de máquina.';
 comment on column public.documento_paginas.visibilidade is
-  'Override por página. NULL = herda de documentos.visibilidade (comportamento pré-existente). '
-  'Se documentos.tem_paginas_mistas = true, uma página com visibilidade NULL fica invisível a '
-  'quem não é gestão até ser classificada — não herda o padrão do documento por omissão '
-  '(app.nivel_efetivo).';
+  'Override por página. NULL = herda de documentos.visibilidade — SEMPRE (app.nivel_efetivo é '
+  '`coalesce(documento_paginas.visibilidade, documentos.visibilidade)`, puramente local desde '
+  'ADR-0023/D16; não existe mais "documento misto" nem exceção de fail-closed por página não '
+  'classificada — essa exceção dependia de outras páginas do mesmo documento e foi o que vazou '
+  'na 3ª rodada do auditor-rls). '
+  'PISO (ADR-0019/D13): quando preenchida, só pode ser IGUAL OU MAIS PERMISSIVA que '
+  'documentos.visibilidade (app.ordem_visibilidade) — nunca mais restritiva. Validado nos DOIS '
+  'lados: documento_paginas_valida_piso (página) e documentos_valida_piso_paginas (documento, '
+  'V3-R) — os dois DÃO ERRO, nunca sobrescrevem em silêncio. Com este piso garantido dos dois '
+  'lados, herdar o padrão do documento para página sem override é seguro por construção — '
+  'nenhuma página pode exigir mais do que o arquivo já exige de quem o baixou.';
 
 -- ============================================================================
 -- chunks — espelha `documentos` — o ponto mais crítico do schema
@@ -216,28 +233,38 @@ comment on column public.chunks.pagina_ini is
 
 alter table public.tipos_documento enable row level security;
 alter table public.tipos_documento force row level security;
-revoke all on public.tipos_documento from public, anon, authenticated;
+revoke all on public.tipos_documento from public, anon, authenticated, service_role;
 grant select on public.tipos_documento to anon, authenticated;
 grant insert, update, delete on public.tipos_documento to authenticated;
 
 alter table public.documentos enable row level security;
 alter table public.documentos force row level security;
-revoke all on public.documentos from public, anon, authenticated;
+revoke all on public.documentos from public, anon, authenticated, service_role;
 grant select on public.documentos to anon, authenticated;
 grant insert, update on public.documentos to authenticated; -- delete: ninguém (arquivar por status)
+-- V4: o worker atualiza status/metadados/ocr_aplicado/paginas/erro_detalhe/versao_pipeline
+-- conforme processa — a linha em si nasce pelo editor (authenticated), o pipeline só evolui o
+-- estado. Sem INSERT/DELETE: criação e arquivamento continuam humanos.
+grant select, update on public.documentos to service_role;
 
 alter table public.documento_unidades enable row level security;
 alter table public.documento_unidades force row level security;
-revoke all on public.documento_unidades from public, anon, authenticated;
+revoke all on public.documento_unidades from public, anon, authenticated, service_role;
 grant select on public.documento_unidades to authenticated;
 grant insert, update, delete on public.documento_unidades to authenticated;
 
 alter table public.documento_paginas enable row level security;
 alter table public.documento_paginas force row level security;
-revoke all on public.documento_paginas from public, anon, authenticated;
-grant select on public.documento_paginas to anon, authenticated; -- escrita: nenhuma (worker via service_role)
+revoke all on public.documento_paginas from public, anon, authenticated, service_role;
+grant select on public.documento_paginas to anon, authenticated;
+-- V4: esta é literalmente a tabela do worker (declarado no comentário da própria tabela: "Só o
+-- worker, por service_role — é saída de máquina"). Sem este GRANT explícito, o worker não tinha
+-- NENHUM DML aqui e o pipeline de ingestão era inoperável como desenhado.
+grant select, insert, update, delete on public.documento_paginas to service_role;
 
 alter table public.chunks enable row level security;
 alter table public.chunks force row level security;
-revoke all on public.chunks from public, anon, authenticated;
-grant select on public.chunks to anon, authenticated; -- escrita: nenhuma (worker via service_role)
+revoke all on public.chunks from public, anon, authenticated, service_role;
+grant select on public.chunks to anon, authenticated;
+-- V4: mesma razão de documento_paginas — reprocessamento idempotente (SPEC §3) substitui chunks.
+grant select, insert, update, delete on public.chunks to service_role;

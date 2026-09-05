@@ -395,7 +395,6 @@ export type Database = {
           codigo_administradora: string | null
           conta_pai_id: string | null
           criado_em: string
-          exige_deliberacao: boolean
           fundo: Database["public"]["Enums"]["fundo"]
           id: string
           natureza: Database["public"]["Enums"]["natureza_conta"]
@@ -410,7 +409,6 @@ export type Database = {
           codigo_administradora?: string | null
           conta_pai_id?: string | null
           criado_em?: string
-          exige_deliberacao?: boolean
           fundo?: Database["public"]["Enums"]["fundo"]
           id?: string
           natureza: Database["public"]["Enums"]["natureza_conta"]
@@ -425,7 +423,6 @@ export type Database = {
           codigo_administradora?: string | null
           conta_pai_id?: string | null
           criado_em?: string
-          exige_deliberacao?: boolean
           fundo?: Database["public"]["Enums"]["fundo"]
           id?: string
           natureza?: Database["public"]["Enums"]["natureza_conta"]
@@ -1465,6 +1462,7 @@ export type Database = {
       }
       pessoas: {
         Row: {
+          anonimizada_em: string | null
           ativa: boolean
           atualizado_em: string
           auth_user_id: string | null
@@ -1480,6 +1478,7 @@ export type Database = {
           telefone: string | null
         }
         Insert: {
+          anonimizada_em?: string | null
           ativa?: boolean
           atualizado_em?: string
           auth_user_id?: string | null
@@ -1495,6 +1494,7 @@ export type Database = {
           telefone?: string | null
         }
         Update: {
+          anonimizada_em?: string | null
           ativa?: boolean
           atualizado_em?: string
           auth_user_id?: string | null
@@ -1732,6 +1732,7 @@ export type Database = {
           fim: string | null
           id: string
           inicio: string
+          motivo_fim: Database["public"]["Enums"]["motivo_fim_vinculo"] | null
           pessoa_id: string
           tipo: Database["public"]["Enums"]["tipo_vinculo"]
           unidade_id: string
@@ -1742,6 +1743,7 @@ export type Database = {
           fim?: string | null
           id?: string
           inicio?: string
+          motivo_fim?: Database["public"]["Enums"]["motivo_fim_vinculo"] | null
           pessoa_id: string
           tipo: Database["public"]["Enums"]["tipo_vinculo"]
           unidade_id: string
@@ -1752,6 +1754,7 @@ export type Database = {
           fim?: string | null
           id?: string
           inicio?: string
+          motivo_fim?: Database["public"]["Enums"]["motivo_fim_vinculo"] | null
           pessoa_id?: string
           tipo?: Database["public"]["Enums"]["tipo_vinculo"]
           unidade_id?: string
@@ -1971,10 +1974,25 @@ export type Database = {
       }
     }
     Functions: {
+      eh_editor_vigente_linha: {
+        Args: {
+          p_mandato_fim: string
+          p_mandato_inicio: string
+          p_papel: Database["public"]["Enums"]["papel"]
+          p_pessoa_ativa: boolean
+        }
+        Returns: boolean
+      }
       unaccent_imutavel: { Args: { txt: string }; Returns: string }
     }
     Enums: {
       fundo: "nenhum" | "reserva" | "obras"
+      motivo_fim_vinculo:
+        | "venda"
+        | "fim_locacao"
+        | "obito"
+        | "pedido_titular"
+        | "erro_cadastral"
       natureza_conta: "receita" | "despesa"
       origem_lancamento: "balancete_importado" | "manual" | "ajuste"
       papel: "editor" | "conselho" | "morador"
@@ -2129,6 +2147,13 @@ export const Constants = {
   public: {
     Enums: {
       fundo: ["nenhum", "reserva", "obras"],
+      motivo_fim_vinculo: [
+        "venda",
+        "fim_locacao",
+        "obito",
+        "pedido_titular",
+        "erro_cadastral",
+      ],
       natureza_conta: ["receita", "despesa"],
       origem_lancamento: ["balancete_importado", "manual", "ajuste"],
       papel: ["editor", "conselho", "morador"],

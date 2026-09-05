@@ -2,7 +2,9 @@ name: CI
 
 # Ordem obrigatória (SPEC §1.2): lint, typecheck, testes unitários, testes de a11y, testes de
 # RLS, supabase db push. Nenhum deploy passa com qualquer etapa vermelha — cada job depende do
-# anterior via `needs`.
+# anterior via `needs`. O job `ci-gate` é o único que deve virar "required status check" na
+# branch protection do GitHub (pendência registrada em docs/ops/divida-tecnica.md) — ver o
+# comentário no próprio job para o motivo de não ser `rls-test` diretamente.
 on:
   push:
     branches: [main]
@@ -120,20 +122,49 @@ jobs:
       # comentário no passo "Filtrar migrações de teste" abaixo.
       - name: Start Supabase local
         run: supabase start
-      # Suíte real do auditor-rls em supabase/tests/01..04*.sql. Sem condicional de "se vazio,
-      # pula" — a suíte existe, e o job PRECISA ficar vermelho enquanto ela tiver assert
-      # falhando (hoje: 20 asserts vermelhos de propósito, correções em curso pelo
-      # eng-supabase/arquiteto). Não mascarar isso é o ponto do job.
+      # Suíte real do auditor-rls em supabase/tests/01..05*.sql. Sem condicional de "se vazio,
+      # pula" — a suíte existe, e o job PRECISA ficar vermelho no primeiro assert que quebrar.
+      # Aprovada na 4ª rodada de auditoria em 2026-09-04 (176/176, determinístico em 3
+      # execuções — docs/auditoria/veredito-f0.md). Esse veredito só vale para sempre se este
+      # job continuar rodando a cada alteração de migração e barrando regressão — é o que o
+      # job ci-gate, logo abaixo, existe para garantir de verdade (não só "roda e reporta").
       - name: Rodar testes pgTAP de RLS
         run: supabase test db --local supabase/tests
       - name: Parar Supabase local
         if: always()
         run: supabase stop
 
+  # ---------------------------------------------------------------------------------------
+  # Gate único de merge. Existe por um motivo específico, não decorativo: com `needs` em
+  # cadeia, se `lint` falhar, os jobs seguintes (typecheck, unit-test, a11y-test, rls-test)
+  # ficam com status SKIPPED — e o GitHub trata "skipped" como requisito satisfeito em branch
+  # protection por padrão. Ou seja: exigir só `rls-test` como status check obrigatório NÃO
+  # barra o merge se `lint` (ou qualquer job anterior na cadeia) quebrar — o PR aparenta estar
+  # verde. `ci-gate` roda sempre (`if: always()`), inspeciona o resultado de cada job da
+  # cadeia via `needs.*.result` e falha de verdade (não "pula") se qualquer um não foi
+  # `success`. É ESTE job — e só ele — que deve ser marcado como "required status check" na
+  # branch protection do repositório quando ele existir no GitHub (ver README.md, seção CI/CD,
+  # e a pendência registrada em docs/ops/divida-tecnica.md).
+  # ---------------------------------------------------------------------------------------
+  ci-gate:
+    name: CI gate (obrigatório para merge)
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, unit-test, a11y-test, rls-test]
+    if: always()
+    steps:
+      - name: Falhar se qualquer job da cadeia não passou
+        run: |
+          echo '${{ toJSON(needs) }}' | jq .
+          if echo '${{ toJSON(needs) }}' | jq -e 'to_entries[] | select(.value.result != "success")' > /dev/null; then
+            echo "::error::Um ou mais jobs da cadeia (lint/typecheck/unit-test/a11y-test/rls-test) não passaram (falhou ou foi pulado) — isto tem que barrar o merge."
+            exit 1
+          fi
+          echo "Todos os jobs da cadeia passaram de verdade."
+
   db-push:
     name: supabase db push (deploy)
     runs-on: ubuntu-latest
-    needs: rls-test
+    needs: ci-gate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production
     steps:
