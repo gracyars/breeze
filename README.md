@@ -33,7 +33,7 @@ pnpm dev                 # http://localhost:3000
 | `pnpm test:a11y` | Acessibilidade (Playwright + axe) sobre `/design-system` |
 | `pnpm test:e2e` | Ponta a ponta: entrada, segundo fator e ingestão — **exige `supabase start`** |
 | `pnpm worker` | Worker de ingestão, em laço. `pnpm worker:uma-vez` drena a fila e sai |
-| `pnpm backfill "<arquivo\|pasta>" --tipo <codigo>` | Sobe documento do acervo e enfileira a leitura. **Pede o código do seu autenticador** |
+| `pnpm backfill "<arquivo\|pasta>" [--todos]` | Sobe documento do acervo e enfileira a leitura; tipo, data e título saem do nome do arquivo. **Pede o código do seu autenticador** |
 | `pnpm dev:semeia-editora` | Cria a editora no ambiente local (só contra o Supabase local) |
 | `pnpm probe:aal2` | Sonda D1: confirma que o Auth só emite `aal2` depois do segundo fator |
 
@@ -62,8 +62,8 @@ supabase start
 pnpm dev:semeia-editora              # uma vez, no ambiente local
 # entre em /entrar, pegue o link em http://127.0.0.1:54324 e cadastre o 2º fator em /seguranca
 
-pnpm backfill "Documentos do Condomínio/RI - Regulamento Interno - Breeze Bosque da Saúde.pdf" --tipo regimento
-pnpm worker:uma-vez                  # hash/dedupe → extração → OCR se precisar → chunking
+pnpm backfill "Documentos do Condomínio" --todos   # 43 PDFs, tipo e data vindos do nome
+pnpm worker                                        # hash/dedupe → extração → OCR se precisar → chunking
 ```
 
 **Por que o backfill pede o código do autenticador:** `service_role` não tem `INSERT` em
@@ -76,7 +76,9 @@ custo zero, nenhum fornecedor a contratar como operador de dado pessoal. Mediç�
 `docs/ocr/medicao-vision-convencao.md`; a decisão em `docs/adr/0024-…`.
 
 **Nada é publicado automaticamente.** O pipeline termina em `em_revisao`; publicar é ato humano
-(SPEC §3.5).
+(SPEC §3.5). A fila de conferência fica em `/curadoria`: um documento por vez, ordenado por valor
+entregue, com o começo do texto lido ao lado para conferir — e é retomável, porque parar no meio é
+o comportamento esperado de quem confere 43 documentos sozinha.
 
 ## Ambientes (SPEC §1.2)
 
