@@ -20,6 +20,7 @@ valer imediatamente para invariante **nova ou alterada**.
 | INV-10 | `cpf_enc` fora do `GRANT SELECT`; nenhuma coluna nova entra por omissão | 0017 | a preencher | `eng-supabase` |
 | INV-11 | Snapshot de signatário congela na assinatura e é imutável | 0020 | a preencher | `eng-supabase` |
 | INV-12 | Acesso cessa em `vinculos.fim` + 0 dias (`eh_autenticado` derivada de vínculo/papel) | parecer `juridico-lgpd` C1 | a preencher — **bloqueia produção** | `eng-supabase` |
+| INV-13 | **Derivado invalidado implica reconstrução enfileirada** — documento publicado com `indexado_em is null` tem job de `chunking` pendente/processando, ou aparece na sentinela | 0026 | a preencher — **invariante nova, o gate já vale para ela**; inclui as células `DELETE` direto em `chunks` por `service_role` e restore com lease vencida | `eng-supabase` |
 
 **Ordem sugerida de preenchimento:** INV-12 e INV-01 primeiro (bloqueiam produção e o predicado
 está mudando), depois INV-03/04/05 (a família de visibilidade, onde três das quatro rodadas

@@ -204,6 +204,14 @@ exceção dos triggers citam esse caminho — é onde você vai cair primeiro.
 - **Facetas:** tipo, ano, competência, fornecedor, assembleia. Pré-filtro em Postgres antes do vetorial — barato nesta escala.
 - **Restrição de infraestrutura:** a skill `postgres-hybrid-text-search` (Timescale, instalada como referência de RRF) pressupõe a extensão `pg_textsearch` (BM25), **indisponível no Supabase gerenciado**. O RRF é aproveitável; a receita não. Manter `tsvector` nativo conforme ADR-5.
 - **Roteamento de intenção:** pergunta sobre **valor** ("quanto gastamos com elevador em 2025?") **nunca** é respondida por RAG sobre balancete escaneado — é roteada para SQL sobre `lancamentos`. Pergunta normativa ("posso ter cachorro?") vai para busca semântica sobre convenção e regimento.
+> **Correção, 2026-09-06 (D17, ADR-0024).** A citação por **artigo** não serve para toda fonte
+> normativa deste condomínio. A Convenção registrada **não é articulada**: são 2 ocorrências de
+> "Art." em 58 mil caracteres, e a estrutura real é `cláusula 1.` → `item a)` → `subitem i.`. Quem
+> tem 191 artigos é o Regimento Interno. Logo a citação da Convenção é **cláusula + item + página**,
+> e a skill `rag-citacao-juridica-ptbr` precisa do formato antes de a busca citar Convenção. O
+> agravante: o marcador de item é justamente o token que o OCR mais erra (`ii.` chega como `il.`),
+> e é por isso que `lib/ocr/marcadores.ts` existe.
+
 - **Síntese:** permitida, com trava. Grounding estrito nos chunks recuperados, citação obrigatória por afirmação (documento + página + trecho literal), recusa explícita quando o acervo não responde. **A UI mostra o trecho original como resultado primário e a síntese como secundária** — o inverso do padrão de chatbot. Disclaimer permanente: não é interpretação jurídica.
 
 ---
@@ -401,8 +409,17 @@ em branco, não por cor. A régua: deve parecer confiável como um extrato banc�
 
 ## 9. Fases
 
-**F0 — Fundação:** repo, ambientes, schema, RLS + testes de policy, auth, design tokens.
-**F1 — Acervo:** upload, pipeline de ingestão, backfill do histórico, busca híbrida, leitor de documento.
+**F0 — Fundação:** repo, ambientes, schema, RLS + testes de policy, ~~auth~~, design tokens.
+**F1 — Acervo:** **autenticação**, upload, pipeline de ingestão, backfill do histórico, busca híbrida, leitor de documento.
+
+> **Correção, 2026-09-06 (ADR-0029).** F0 fechou com o schema e a RLS que *dependem* do JWT
+> (`aal2`, `papeis`, `vinculos`), mas **sem uma linha de código de autenticação** — a suíte pgTAP
+> simula o claim `aal` no token de teste. Auth passa a ser o primeiro corte de F1, antes de
+> qualquer tela de acervo, por três razões: é o que fecha a dívida **D1** (o GoTrue emite `aal2`
+> só depois da verificação do TOTP, ou já no enrolamento?), sem sessão nenhuma visibilidade
+> autenticada é testável ponta a ponta, e `service_role` **não tem `INSERT` em `documentos`** por
+> desenho — então nem o script de backfill roda sem uma editora autenticada.
+
 **F2 — Financeiro:** plano de contas, importação assistida do balancete, painel para leigos, orçado vs realizado.
 **F3 — Fiscalização:** motor de alertas, questionamentos, parecer do conselho, trilha auditável exposta.
 **F4 — Endurecimento:** acessibilidade, QA E2E, backup e restore testado, onboarding dos moradores.

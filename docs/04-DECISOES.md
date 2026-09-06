@@ -415,3 +415,47 @@ não enumera.
 *Escopo:* ADR-0023 e `docs/invariantes/` (README, template, INV-02 preenchido como referência,
 INVENTARIO com 12 invariantes e donos). Implementação do gate: `devops` com `eng-supabase`.
 Preenchimento das 11 restantes: `eng-supabase`, antes de produção, começando por INV-12 e INV-01.
+
+---
+
+## 2026-09-06
+
+**D17 — OCR local offline substitui a API paga; o custo agora é conferência, não dinheiro.** A dona
+do projeto decidiu, ao abrir F1, fazer o OCR na própria máquina em vez de contratar fornecedor. O
+que sustenta a mudança não é preferência: é que **a premissa do ADR-0006 não vale para este
+acervo**. Aquele ADR escolheu API paga porque "atas antigas vêm com scan torto, abaixo de 200 DPI";
+a sondagem do acervo real mostrou que **nenhum documento é anterior a 2025** e que só 2 dos 43 PDFs
+são escaneados. O motor local é o Vision do próprio macOS: nada sai da máquina, custo zero, e —
+consequência que vale mais que o dinheiro — **não há operador de dado pessoal a contratar**, então
+some o prazo jurídico que o `juridico-lgpd` teria de cumprir antes da ingestão.
+
+*Medido antes de aceitar, não depois:* 18 páginas em 22 s, confiança média 0,985, 26 das 945 linhas
+abaixo de 0,9 — quase todas marcadores de item de uma letra, nenhuma parágrafo de texto corrido.
+Três páginas conferidas contra a imagem renderizada, incluindo a do quórum: **todos os números
+conferem**, nenhum erro que mude sentido. Ver ADR-0024 ("Veredito da sonda C0") e
+`docs/ocr/medicao-vision-convencao.md`.
+
+*O achado que a sonda entregou de brinde, e que muda F1:* **a Convenção não é articulada** — 2
+ocorrências de "Art." em 58 mil caracteres. A estrutura é cláusula → item `a)` → subitem `i.`, e
+quem tem 191 artigos é o Regimento. Logo **a unidade citável da Convenção é o item**, e o item é
+exatamente o token que o OCR erra (`ii.` chega como `il.`, `iii.` como `li.`). O SPEC §4 e a skill
+`rag-citacao-juridica-ptbr` pressupõem citação por artigo; isso precisa ser corrigido antes de a
+busca citar Convenção.
+
+*Lição do normalizador, reutilizável fora do OCR:* a primeira versão renumerava em cascata todos os
+itens seguintes a um marcador que o reconhecedor não leu — um item perdido corrompia o capítulo
+inteiro. A correção não foi um caso especial, foi uma regra: **token que já é válido nunca é
+reescrito; dessincronizado, sinaliza a lacuna em vez de renumerar o documento**. O preço é perder
+correção verdadeira (na pág. 17, `xviii.` lido como `xvii.` fica para a conferência). Em produto
+cuja citação é o valor, recall vale menos que não corromper.
+
+**D18 — F1 entrega busca léxica; embedding e classificação nascem desligados.** Sem chave de LLM
+por ora. A busca `tsvector` com a configuração `public.pt_br` já resolve identificador exato
+("art. 12", "AGE de março", nome de fornecedor), que é metade do problema do SPEC §4 — e é
+justamente a metade que a busca vetorial erraria. A etapa de embedding fica atrás de uma interface,
+desligada, e acende por reprocessamento quando houver chave (ADR-0027), sem migração e sem
+retrabalho. **A trava para isso não virar dívida escondida:** a UI precisa dizer que a metade
+semântica está desligada — acervo que responde pela metade sem avisar é pior que acervo que avisa.
+
+*Consequência de custo:* o §1.2 do SPEC perde o custo único de OCR pago (R$50–300) e não ganha
+serviço nenhum. Nenhum gasto recorrente novo em F1.
