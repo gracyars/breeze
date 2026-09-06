@@ -42,14 +42,56 @@ Para cada tipo: periodicidade, quem produz, metadados a extrair para a tabela `d
   multa por infração.
 - **Visibilidade padrão:** público.
 
-## 3. Atas de assembleia (AGO/AGE)
-- **Periodicidade:** AGO anual (prestação de contas, orçamento, eleição); AGE sob demanda.
-- **Produz:** secretário da mesa/síndico, redigida na própria assembleia.
-- **Metadados:** tipo (AGO/AGE), data, quórum presente, lista de pauta, `deliberacoes` (item,
-  resultado, votos) vinculadas a `chunk_id` para citação exata.
+## 3. Atas de assembleia (AGO/AGE/AGI)
+- **Periodicidade:** AGO anual (prestação de contas, orçamento, eleição); AGE sob demanda; AGI
+  uma vez, na instalação do condomínio (ver nota abaixo).
+- **Produz:** secretário da mesa/síndico, redigida na própria assembleia. Na AGI, tipicamente a
+  incorporadora/construtora conduz, porque ainda não há síndico eleito.
+- **Metadados:** espécie (AGO/AGE/AGI — vive em `assembleias.tipo`, enum `tipo_assembleia`, **não**
+  em `tipos_documento`: o artefato "ata" é um `codigo` só; a espécie jurídica é propriedade da
+  assembleia, não do documento — ver `docs/dominio/taxonomia-documental-decisoes.md` §2), data,
+  quórum presente, lista de pauta, `deliberacoes` (item, resultado, votos) vinculadas a
+  `chunk_id` para citação exata.
 - **Busca típica:** "o que foi decidido sobre X", autorização de gasto, resultado de votação,
   eleição de síndico/conselho.
 - **Visibilidade padrão:** autenticado — contém nome e unidade de presentes e votantes.
+- **AGI — Assembleia Geral de Instalação:** ato que formaliza a instituição do condomínio após a
+  entrega (habite-se), tipicamente antes de haver síndico eleito. **O Código Civil não a nomeia**
+  (só trata de AGO, art. 1.350, e AGE, art. 1.355) — "AGI" é nome de mercado, com disciplina de
+  fundo mais próxima da Lei 4.591/64 (instituição e primeira administração), matéria que
+  `condominio-legal` declara **fora do seu escopo atual** (não cobre incorporação). Trate o
+  quórum de uma AGI como `[NÃO COBERTO — condominio-legal em construção]`, não como equivalente
+  automático ao de uma AGE comum.
+
+## 3-bis. Resumo de assembleia (não oficial)
+- **Periodicidade:** um por assembleia, circula **antes** da ata formal — é frequentemente o que
+  o morador lê primeiro.
+- **Produz:** administradora (comunicação/atendimento), não a mesa da assembleia.
+- **Metadados:** `assembleia_id` (nullable — preenchido na conferência humana por proximidade de
+  data), `data_assembleia_referida`, `substitui_documento_id` (nullable, aponta para a ata quando
+  publicada).
+- **Busca típica:** morador perguntando "o que foi decidido" antes de a ata sair.
+- **Visibilidade padrão:** autenticado — mesma audiência da ata; o problema deste tipo não é quem
+  vê, é **o que pode ser citado como prova de decisão**. `deliberacoes.documento_id` nunca aponta
+  para um `resumo_assembleia`, só para `ata_assembleia`. Toda citação de um resumo carrega o selo
+  fixo **"Resumo da administração · não é a ata oficial"** — distinto do selo de "resumo gerado
+  por IA" da skill `rag-citacao-juridica-ptbr`, porque aqui quem resume é a gestão, não o modelo.
+  Quando ata e resumo do mesmo evento estão indexados, a resposta a uma pergunta
+  factual-documental prioriza o trecho da ata. Raciocínio completo:
+  `docs/dominio/taxonomia-documental-decisoes.md` §3.
+- **Sinais de reconhecimento:** "resumo da assembleia", "principais pontos discutidos", ausência
+  da fórmula ritual de abertura de ata ("aos [dia] dias do mês de...", "secretariada por"), sem
+  lista de presença formal, tom de comunicado/e-mail em vez de registro cartorial.
+
+## 3-ter. Material de apoio de assembleia
+- **Periodicidade:** sob demanda, ligado a uma assembleia específica.
+- **Produz:** síndico/administradora, para uso durante a reunião (slide, roteiro).
+- **Metadados:** `assembleia_id` nullable, data.
+- **Busca típica:** baixa — é referência de "o que foi mostrado", útil sobretudo em disputa sobre
+  o que a assembleia discutiu.
+- **Visibilidade padrão:** autenticado.
+- **Sinais de reconhecimento:** formato slide/apresentação, pouco texto corrido por página, título
+  "Apresentação Reunião/Assembleia" + data, sem redação de deliberação.
 
 ## 4. Editais de convocação
 - **Periodicidade:** um por assembleia, antecede a ata em dias (prazo mínimo previsto em
@@ -186,6 +228,19 @@ vinculada a uma unidade; cotação não é de ninguém).
 ampliar páginas de uma proposta `conselho` é custo de curadoria sem benefício — a necessidade do
 morador já está atendida por R2 — enquanto cada override é superfície nova de erro.
 
+**R6 — Depois que a assembleia decide, a visibilidade da proposta não muda; muda qual artefato
+carrega a informação para o morador.** A proposta vencedora continua `conselho` — a razão de R1
+(dado pessoal de terceiro na íntegra) não desaparece por ter sido escolhida — e a perdedora
+também, para sempre, como prova de concorrência para auditoria. O que sobe é o **agregado**,
+através de dois documentos novos, não da promoção do PDF da cotação: a deliberação que aprova a
+contratação (`deliberacoes`, documento_id = a ata, autenticado) e o `contrato` resultante
+(`tipos_documento.contrato`, já autenticado por padrão), referenciando o `fornecedor_id`
+vencedor. Mesmo padrão de R2, estendido no tempo. O direito individual de inspecionar documento
+da administração (STJ REsp 2.050.372, `condominio-legal` §3) segue exercível fora do Breeze,
+pedindo o documento específico ao síndico/administradora — o produto não precisa replicar dado
+pessoal de terceiro para toda a base autenticada para não fechar esse direito. Raciocínio
+completo: `docs/dominio/taxonomia-documental-decisoes.md` §4.
+
 ## 13. Atas do conselho fiscal
 - **Periodicidade:** conforme reunião do conselho — tipicamente mensal, acompanhando o
   balancete.
@@ -198,6 +253,86 @@ morador já está atendida por R2 — enquanto cada override é superfície nova
   pode subir para autenticado quando o parecer final é formalmente comunicado aos moradores,
   mas a ata de reunião de trabalho em si fica restrita ao órgão. [VERIFICAR — depende de decisão
   do dono do projeto sobre se o parecer tem valor formal perante assembleia, Briefing §7 item 3]
+
+## 14. Comunicado avulso
+- **Periodicidade:** sob demanda — é o tipo de maior volume no acervo real (56% dos 43 documentos
+  sondados em `docs/inventario-acervo.md`, achado estrutural que motivou este tipo).
+- **Produz:** síndico/administradora.
+- **Metadados:** data de emissão, remetente, **categoria** (`financeiro | operacional |
+  institucional` — faceta de busca, não `codigo` separado), `unidade_destinataria` nullable — se
+  preenchida, **força visibilidade `restrito`** (mesma régua de dado individualizado por unidade
+  usada em notificação/multa).
+- **Busca típica:** esclarecimento de boleto, liberação de espaço comum, mudança de sistema de
+  segurança, rateio de item específico (ex.: enxoval), aviso operacional (elevador, portão).
+- **Visibilidade padrão:** autenticado.
+- **Sinais de reconhecimento:** curto (1–3 páginas), "informamos", "comunicamos aos senhores
+  condôminos", assinado pela gestão. **Armadilha real — não classificar aqui se o texto contiver
+  data/hora/local de assembleia junto de pauta:** isso é convocação, tipo `edital_convocacao`,
+  **mesmo que o título diga "lembrete" ou "aviso"** — "lembrete de assembleia" tem efeito jurídico
+  (CC art. 1.354: a assembleia não delibera se todos não forem convocados); "a churrasqueira
+  reabriu" não tem. Na dúvida, classifique como `edital_convocacao` — falha para o lado de maior
+  efeito jurídico. Raciocínio completo: `docs/dominio/taxonomia-documental-decisoes.md` §1.1.
+
+## 14-bis. Comunicado de governança
+- **Periodicidade:** sob demanda, ligado a início/fim de mandato ou mudança de gestão.
+- **Produz:** a própria pessoa/entidade que assume ou deixa o cargo, ou a administradora
+  anunciando a mudança.
+- **Metadados:** `papel_afetado` (`sindico | subsindico | conselho | administradora`), `evento`
+  (`posse | renuncia | apresentacao | substituicao`), data efetiva, e o vínculo correto — **atenção
+  à D3**: quando o evento é do síndico terceirizado, vincula a `fornecedores.id`
+  (`eh_sindico_terceirizado = true`), **nunca** a `papeis.id`, porque D3 estabelece que síndico
+  terceirizado não tem papel nem conta; quando é de subsíndica/conselho (pessoa com conta),
+  vincula a `papeis.id`.
+- **Busca típica:** "quem é o síndico atual", histórico de gestão em caso de disputa sobre má
+  administração.
+- **Visibilidade padrão:** autenticado.
+- **Retenção:** **permanente** — diferente do comunicado genérico (24 meses). É registro de
+  mandato, com o mesmo valor evidencial de uma ata em disputa de destituição (CC art. 1.349) e do
+  dever de prestar contas (CC art. 1.348, VIII); reter por prazo curto contrariaria a lógica de
+  atas e pareceres, que são permanentes pelo mesmo motivo.
+- **Sinais de reconhecimento:** "carta de apresentação", "venho comunicar minha renúncia/saída do
+  cargo de síndico", "assumo a gestão a partir desta data".
+
+## 15. Documento da construtora / entrega de obra
+- **Periodicidade:** um evento só, na entrega do condomínio — irrelevante para condomínio com
+  vários anos de operação, central nos primeiros meses (este condomínio tem ~8 meses de vida,
+  `docs/inventario-acervo.md`).
+- **Produz:** a construtora/incorporadora, não a gestão do condomínio.
+- **Metadados:** `subtipo` (`habite_se | manual_proprietario | formulario_garantia`), CNPJ/razão
+  social da construtora, `numero_processo` (para habite-se), `vigencia_garantia_meses` nullable
+  por item coberto `[VERIFICAR — inferência de prática de mercado a partir do CC art. 618
+  (responsabilidade do empreiteiro por solidez e segurança, 5 anos), artigo fora do recorte
+  confirmado de condominio-legal, que cobre só arts. 1.331–1.358 e declara não cobrir
+  incorporação/empreitada]`.
+- **Busca típica:** "como aciono a garantia de X", "o prédio tem habite-se", especificação técnica
+  de sistema predial (elevador, hidráulica, elétrica) para comparar com laudo real.
+- **Visibilidade padrão:** autenticado. **Não classificar como público** apesar de o conteúdo ser
+  em geral impessoal — a regra "só convenção e regimento são públicos" (D2) não é reaberta por
+  esta skill; se houver caso de negócio para exceção (ex.: habite-se), é pergunta para
+  `juridico-lgpd`, registrada como aberta em
+  `docs/dominio/taxonomia-documental-decisoes.md` §5, não decidida aqui.
+- **Sinais de reconhecimento:** habite-se — "certificado de conclusão", "processo nº", órgão
+  municipal emissor; manual do proprietário — "manual do proprietário", versão "V0x", extenso
+  (dezenas de páginas), organizado por sistema predial; formulário de garantia — "assistência
+  técnica", "solicitação de garantia", campos em branco, papel timbrado da construtora.
+
+## 16. Demonstrativo de composição de cota
+- **Periodicidade:** mensal, com `competencia`.
+- **Produz:** administradora.
+- **Metadados:** `competencia` (dia 1), `unidade_id` nullable, rubricas presentes (ordinária,
+  extraordinária, fundo de reserva, rateio específico).
+- **Busca típica:** "de onde vem esse valor da minha cota", "por que a taxa mudou este mês" —
+  especialmente relevante em condomínio recém-entregue com renegociação de boleto e rateio de
+  enxoval, como o do acervo real.
+- **Visibilidade padrão:** autenticado; **`restrito`** se `unidade_id` estiver preenchida (a
+  régua de dado individualizado por unidade, mesma de notificação/multa).
+- **Retenção:** permanente — mesma régua de balancete/previsão orçamentária, por comparabilidade
+  histórica e porque é insumo direto para investigar a divergência do risco 4 do SPEC §8
+  (publicado × balancete real). **Não é a mesma família do "comunicado avulso" apesar de também
+  vir da administradora**: tem periodicidade e função financeira estrutural que o comunicado
+  genérico não tem.
+- **Sinais de reconhecimento:** "composição da cota", "demonstrativo de cota condominial", tabela
+  rubrica × valor, mês/ano no título.
 
 ## Sinais de reconhecimento automático
 
@@ -233,6 +368,21 @@ Um classificador lê o texto das primeiras 1–2 páginas e procura expressões 
   "fica autuado", prazo para defesa.
 - **Ata de conselho fiscal:** "reunião do conselho fiscal", "membros do conselho", "parecer do
   conselho".
+- **Comunicado avulso:** "informamos", "comunicamos aos senhores condôminos", curto (1–3 páginas),
+  assinado pela gestão, **sem** data/hora/local de assembleia + pauta (isso é convocação, não
+  comunicado — §14).
+- **Comunicado de governança:** "carta de apresentação", "venho comunicar minha renúncia/saída do
+  cargo de síndico", "assumo a gestão a partir desta data".
+- **Resumo de assembleia:** "resumo da assembleia", "principais pontos discutidos", **ausência** da
+  fórmula ritual de abertura de ata ("aos [dia] dias do mês de...", "secretariada por"), sem lista
+  de presença formal.
+- **Material de apoio de assembleia:** formato slide/apresentação, pouco texto corrido, título
+  "Apresentação Reunião/Assembleia" + data.
+- **Demonstrativo de composição de cota:** "composição da cota", "demonstrativo de cota
+  condominial", tabela rubrica × valor, mês/ano no título.
+- **Documento da construtora:** habite-se — "certificado de conclusão", "processo nº"; manual do
+  proprietário — "manual do proprietário", versão "V0x"; formulário de garantia — "assistência
+  técnica", campos em branco, papel timbrado da construtora.
 
 ## Prazo de retenção por tipo
 
@@ -251,6 +401,12 @@ Um classificador lê o texto das primeiras 1–2 páginas e procura expressões 
 | Notificações e multas | 5 anos [VERIFICAR — prazo prescricional civil, art. 206 CC] |
 | Documentação de obras | Permanente (valor probatório de gasto de capital) |
 | Atas do conselho fiscal | Permanente, mesma lógica das atas de assembleia |
+| Comunicado avulso | 24 meses — decisão de produto, sem obrigação legal identificada |
+| Comunicado de governança | Permanente — registro de mandato (CC art. 1.348, VIII / 1.349), mesma lógica de atas e pareceres |
+| Resumo de assembleia | Permanente — auditoria de eventual divergência com a ata |
+| Material de apoio de assembleia | Permanente — mesma lógica de auditoria da ata |
+| Demonstrativo de composição de cota | Permanente — mesma régua de balancete/previsão orçamentária |
+| Documento da construtora / entrega de obra | Permanente (produto); prazo de garantia real por item `[VERIFICAR — ver §15]` |
 
 Nenhum desses prazos justifica *exclusão* automática no Breeze — o produto é camada de
 auditoria, e histórico é o ativo central. "Retenção" aqui informa obrigação mínima de guarda,
@@ -273,6 +429,12 @@ visibilidade pública nem autenticado-geral — no máximo `conselho`, em regra 
 - **Dado de saúde** — qualquer menção a condição médica (ex.: justificativa de afastamento,
   laudo de acessibilidade vinculado a pessoa) é dado sensível por definição legal (LGPD, art. 5º,
   II) e deve ser tratado como `restrito` por padrão, nunca extraído para busca geral.
+- **Dado biométrico** — reconhecimento facial, digital, íris etc., quando vinculado a pessoa
+  natural identificável, é dado pessoal sensível por definição legal (LGPD, art. 5º, II, que lista
+  "dado genético ou biométrico" ao lado de dado de saúde). Um "Comunicado Facial" sobre novo
+  sistema de acesso não é, por si, um problema — mas qualquer imagem, template biométrico ou
+  identificação nominal de morador dentro dele é. Achado real no acervo (`docs/inventario-acervo.md`,
+  item 25): sinalizado para `juridico-lgpd`, não resolvido por esta skill.
 - **Imagem de CFTV** — não faz parte do acervo documental do Breeze; se um print entrar
   acidentalmente em algum anexo, tratar como incidente de segurança, não como documento a
   indexar.

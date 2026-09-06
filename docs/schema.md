@@ -30,6 +30,7 @@ ADR-0013 (auditoria), ADR-0014 (CPF), ADR-0015 (enum vs. domínio).
 | **D15 / ADR-0021** | **Invariante de dois lados:** toda invariante relacional exige matriz de caminhos de violação. Novo trigger em `documento_paginas` (invalida chunks ao reclassificar), novo trigger em `documentos` (piso ao afrouxar), correção do seed de `audit.verificar_cadeia` |
 | **D15 / ADR-0022** | Trigger impedindo desativar a última pessoa com papel `editor` vigente |
 | **D16 / ADR-0023** | **Predicado de autorização deve ser local.** Removidos `app.documento_tem_override()` e o ramo "misto" de `app.nivel_efetivo` — o nível de uma página deixa de depender de outras páginas. `tem_paginas_mistas` sai do caminho de segurança |
+| **F1 / taxonomia do acervo real** (`docs/dominio/taxonomia-documental-decisoes.md`) | 5 tipos novos em `tipos_documento`: `resumo_assembleia`, `material_apoio_assembleia`, `comunicado_governanca`, `demonstrativo_cota`, `documento_construtora` (§6.1). `agi` como valor de `tipo_assembleia` já estava na baseline (§3, correção do orquestrador em 2026-09-04) — só documentado aqui agora. Dois triggers novos: `demonstrativo_cota`/`comunicado` vinculado a uma unidade em `documento_unidades` exige `documentos.visibilidade='restrito'`, nos dois lados (§6.3); `deliberacoes.documento_id` só ancora em `ata_assembleia`, nunca em `resumo_assembleia` (§7.2). Migrações `20260906090000`/`20260906090100`; testado em `supabase/tests/06_taxonomia_f1_restricao_unidade.sql` (176→202 asserts) |
 
 > **Antes de escrever trigger de invariante que atravessa duas tabelas, leia o ADR-0021** — e
 > **preencha o formulário em [`invariantes/`](invariantes/README.md)**, que tem gate de CI.
@@ -185,7 +186,11 @@ create type public.tipo_vinculo     as enum ('proprietario','inquilino','residen
 create type public.severidade_alerta as enum ('baixa','media','alta','critica');
 create type public.status_alerta    as enum ('aberto','em_analise','resolvido','ignorado');
 create type public.status_questionamento as enum ('aberto','respondido','resolvido');
-create type public.tipo_assembleia  as enum ('ago','age','conselho_fiscal');
+-- 'agi' (Assembleia Geral de Instalação) já na baseline (correção do orquestrador, 2026-09-04,
+-- docs/inventario-acervo.md #2: a primeira ata do condomínio é uma AGI). Confirmado e não
+-- reintroduzido pela taxonomia F1 (docs/dominio/taxonomia-documental-decisoes.md §2) — a
+-- espécie de assembleia é propriedade de `assembleias.tipo`, não do tipo de documento.
+create type public.tipo_assembleia  as enum ('ago','age','agi','conselho_fiscal');
 create type public.status_job       as enum ('pendente','processando','concluido','erro','morto');
 ```
 
@@ -642,14 +647,21 @@ comment on table public.tipos_documento is
    com a operação — laudo novo não deve exigir deploy (ADR-0015).';
 ```
 
-Seed (de `condominio-documentos`; entra em `supabase/seed.sql`, não na migração):
+Seed (de `condominio-documentos`; **corrigido**: vai em MIGRAÇÃO versionada
+(`20260904120700_tipos_documento_seed.sql` + `20260906090000_taxonomia_f1_tipos_documento_seed.sql`),
+não em `supabase/seed.sql` — é dado de referência que precisa existir em todo ambiente,
+inclusive produção, e `seed.sql` só roda em `db reset` local/CI, nunca em `db push` remoto):
+
+**14 tipos da baseline F0** (`comunicado` foi achado estrutural da sonda de acervo real de
+2026-09-04, `docs/inventario-acervo.md` — 24/43 documentos sem tipo formal):
 
 | codigo | nome | visibilidade_padrao | permite_publico | retencao |
 |---|---|---|---|---|
 | `convencao` | Convenção de condomínio | `publico` | **sim** | permanente |
 | `regimento` | Regimento interno | `publico` | **sim** | permanente |
-| `ata_assembleia` | Ata de assembleia (AGO/AGE) | `autenticado` | não | permanente |
+| `ata_assembleia` | Ata de assembleia (AGO/AGE/AGI) | `autenticado` | não | permanente |
 | `edital_convocacao` | Edital de convocação | `autenticado` | não | 60 |
+| `comunicado` | Comunicado avulso | `autenticado` | não | 24 |
 | `balancete` | Balancete mensal | `autenticado` | não | permanente |
 | `prestacao_contas` | Prestação de contas anual | `autenticado` | não | permanente |
 | `previsao_orcamentaria` | Previsão orçamentária | `autenticado` | não | permanente |
@@ -660,8 +672,34 @@ Seed (de `condominio-documentos`; entra em `supabase/seed.sql`, não na migraç�
 | `documentacao_obra` | Documentação de obra | `autenticado` | não | permanente |
 | `ata_conselho` | Ata do conselho fiscal | `conselho` | não | permanente |
 
+**+5 tipos da taxonomia F1 do acervo real** (`docs/dominio/taxonomia-documental-decisoes.md`,
+guardiao-dominio, sonda de 43 PDFs reais):
+
+| codigo | nome | visibilidade_padrao | permite_publico | retencao |
+|---|---|---|---|---|
+| `resumo_assembleia` | Resumo de assembleia (não oficial) | `autenticado` | não | permanente |
+| `material_apoio_assembleia` | Material de apoio de assembleia | `autenticado` | não | permanente |
+| `comunicado_governanca` | Comunicado de governança (posse/renúncia/apresentação) | `autenticado` | não | permanente |
+| `demonstrativo_cota` | Demonstrativo de composição de cota | `autenticado` ⚠ | não | permanente |
+| `documento_construtora` | Documento da construtora / entrega de obra | `autenticado` | não | permanente |
+
 > Retenção aqui informa **obrigação mínima de guarda**, nunca gatilho de expurgo
 > (`condominio-documentos`, seção final).
+
+> ⚠ **`demonstrativo_cota` e `comunicado` são condicionalmente `restrito`.** O valor de
+> `visibilidade_padrao` acima é o do TIPO; um DOCUMENTO desses dois tipos vinculado a uma
+> unidade específica (linha em `documento_unidades`) é forçado a `documentos.visibilidade =
+> 'restrito'` por trigger — nunca por valor de seed, porque a mesma linha de tipo cobre tanto o
+> demonstrativo agregado do condomínio (autenticado, todo mundo) quanto o demonstrativo nominal
+> de uma unidade (restrito, só ela + gestão). Dois triggers, nos DOIS LADOS da relação
+> (ADR-0021): `tg_documento_unidades_exige_restrito` (vincular unidade exige visibilidade já
+> `restrito`) e `tg_documentos_bloqueia_rebaixar_restrito_vinculado` (rebaixar depois que o
+> vínculo existe é rejeitado). Migração `20260906090100_taxonomia_f1_restricao_unidade_trigger.sql`;
+> testado em `supabase/tests/06_taxonomia_f1_restricao_unidade.sql` — mesma régua já usada para
+> `notificacao_multa`/inadimplência (dado individualizado por unidade nunca fica `autenticado`).
+> `notificacao_multa` tem o mesmo risco de fundo (nada barra hoje rebaixá-la com o vínculo já
+> criado) — gap pré-existente, deliberadamente fora desta rodada (linha de escopo do
+> orquestrador); sinalizado para `auditor-rls` decidir se generaliza.
 
 ### 6.2 `documentos` — F0/F1
 
@@ -772,6 +810,11 @@ comment on table public.documento_unidades is
    Por quê: é o predicado que torna visibilidade=restrito implementável. A própria existência da
    linha é informação ("a unidade 302 foi notificada"), então a leitura é restrita do mesmo jeito.';
 ```
+
+> **[F1]** Para `demonstrativo_cota` e `comunicado`, esta tabela é gate de ESCRITA além de
+> leitura: `tg_documento_unidades_exige_restrito` (ver §6.1) rejeita o INSERT/UPDATE aqui se o
+> documento referenciado ainda não é `restrito`. `notificacao_multa` não tem essa trava — a
+> tabela permite o vínculo independente do tipo, como sempre permitiu.
 
 ### 6.4 `documento_paginas` — F1 · **espelha `documentos`**
 
@@ -1004,6 +1047,15 @@ comment on column public.deliberacoes.chunk_id is
    diferentes de citação no mesmo schema e uma indireção para um relacionamento 1:1. Se um dia
    várias entidades precisarem citar o mesmo trecho, extrair a tabela é migração aditiva.';
 ```
+
+> **[F1] Trigger `deliberacoes_ancora_so_ata`** (`20260906090100_taxonomia_f1_restricao_unidade_trigger.sql`):
+> `documento_id`, quando preenchido, só pode referenciar um documento `tipo='ata_assembleia'` —
+> nunca `resumo_assembleia`. Fonte: `docs/dominio/taxonomia-documental-decisoes.md` §3 — o
+> resumo da administração pode ser indexado e citado em busca livre (chunks/documento_paginas
+> continuam abertos a ele), mas não é prova de deliberação; só a ata ancora. A regra de citação
+> propriamente dita (`Citacao.tipo`, selo "Resumo da administração · não é a ata oficial",
+> precedência ata-sobre-resumo) é de `rag-citacao-juridica-ptbr`, fora do escopo de arquivo do
+> `eng-supabase` — esta trigger só impede o dado de entrar torto no banco.
 
 ---
 
