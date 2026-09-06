@@ -1,8 +1,14 @@
 /**
  * Backfill: sobe documento do acervo real e entrega ao pipeline.
  *
- *   pnpm backfill "Documentos do Condomínio/RI - Regulamento Interno.pdf" --tipo regimento
- *   pnpm backfill "Documentos do Condomínio" --tipo comunicado --todos
+ *   pnpm backfill "Documentos do Condomínio/RI - Regulamento Interno.pdf"
+ *   pnpm backfill "Documentos do Condomínio" --todos
+ *
+ * O tipo, o título, a data e a competência saem do **nome do arquivo**, por regra
+ * determinística (`lib/acervo/classificacao.ts`, ADR-0029 §3 item 5) — são 43
+ * documentos e uma pessoa só; digitar três campos por documento mata a
+ * conferência antes do décimo. `--tipo` força um tipo para todo o lote quando a
+ * regra não serve.
  *
  * **Por que este script autentica como a editora, e não usa `service_role`:**
  * `service_role` não tem `INSERT` em `documentos` — é decisão de F0 (V4 da
@@ -24,6 +30,8 @@ import { randomUUID } from "node:crypto";
 
 import { Client } from "pg";
 
+import { classifica } from "@/lib/acervo/classificacao";
+
 function env(chave: string): string {
   if (process.env[chave]) return process.env[chave]!;
   const arquivo = readFileSync(new URL("../../.env.local", import.meta.url), "utf8");
@@ -38,6 +46,7 @@ const CHAVE_SERVICO = env("SUPABASE_SERVICE_ROLE_KEY");
 
 interface Argumentos {
   alvo: string;
+  /** Força o tipo para todo o lote; vazio = deixa a regra decidir por arquivo. */
   tipo: string;
   todos: boolean;
   email: string;
@@ -51,12 +60,14 @@ function argumentos(): Argumentos {
     return i >= 0 && args[i + 1] ? args[i + 1] : padrao;
   };
   if (!alvo) {
-    console.error('uso: pnpm backfill "<arquivo ou pasta>" --tipo <codigo> [--todos] [--email <editora>]');
+    console.error(
+      'uso: pnpm backfill "<arquivo ou pasta>" [--todos] [--tipo <codigo>] [--email <editora>]',
+    );
     process.exit(2);
   }
   return {
     alvo,
-    tipo: valor("tipo", "outros"),
+    tipo: valor("tipo", ""),
     todos: args.includes("--todos"),
     email: valor("email", "editora@breeze.local"),
   };
@@ -133,22 +144,34 @@ async function sessaoDaEditora(email: string): Promise<string> {
   return promovido.access_token;
 }
 
+/** Percorre a pasta inteira, subpastas incluídas — o acervo real é assim. */
 async function arquivosDe(alvo: string, todos: boolean): Promise<string[]> {
   const info = await stat(alvo);
   if (info.isFile()) return [alvo];
   if (!todos) {
     throw new Error(`${alvo} é uma pasta; use --todos para subir tudo que há nela`);
   }
+
+  const encontrados: string[] = [];
   const entradas = await readdir(alvo, { withFileTypes: true });
-  return entradas
-    .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".pdf"))
-    .map((e) => join(alvo, e.name));
+  for (const entrada of entradas) {
+    const caminho = join(alvo, entrada.name);
+    if (entrada.isDirectory()) {
+      encontrados.push(...(await arquivosDe(caminho, true)));
+    } else if (entrada.name.toLowerCase().endsWith(".pdf")) {
+      encontrados.push(caminho);
+    }
+  }
+  return encontrados.sort();
 }
 
 async function main(): Promise<void> {
-  const { alvo, tipo, todos, email } = argumentos();
+  const { alvo, tipo: tipoForcado, todos, email } = argumentos();
   const arquivos = await arquivosDe(alvo, todos);
-  console.log(`${arquivos.length} arquivo(s) para subir como tipo "${tipo}".\n`);
+  console.log(
+    `${arquivos.length} arquivo(s) para subir` +
+      (tipoForcado ? ` como tipo "${tipoForcado}".\n` : ", com tipo vindo do nome.\n"),
+  );
 
   const token = await sessaoDaEditora(email);
   const db = new Client({ connectionString: env("SUPABASE_DB_URL") });
@@ -158,6 +181,7 @@ async function main(): Promise<void> {
   let enviados = 0;
   for (const caminho of arquivos) {
     const nome = basename(caminho);
+    const classificacao = classifica(caminho);
     const conteudo = await readFile(caminho);
     // O nome do objeto não carrega informação (ADR-0004 item 5): o título vive na
     // linha, não no caminho. Assim o Storage não vira índice legível de quem
@@ -196,11 +220,18 @@ async function main(): Promise<void> {
       },
       body: JSON.stringify({
         id: documentoId,
-        tipo,
-        titulo: nome.replace(/\.pdf$/i, "").slice(0, 200),
+        tipo: tipoForcado || classificacao.tipo,
+        titulo: classificacao.titulo.slice(0, 200),
+        data_documento: classificacao.dataDocumento,
+        competencia: classificacao.competencia,
         storage_bucket: "documentos",
         storage_path: storagePath,
         status: "pendente",
+        // Só manda visibilidade quando a regra tem motivo; sem isso, o padrão do
+        // tipo prevalece — e o padrão é sempre o mais fechado dos dois.
+        ...(classificacao.visibilidade
+          ? { visibilidade: classificacao.visibilidade }
+          : {}),
       }),
     });
 
@@ -217,7 +248,12 @@ async function main(): Promise<void> {
     ]);
 
     enviados += 1;
-    console.log(`  ✓ ${nome} → ${documentoId}`);
+    console.log(
+      `  ✓ ${nome}\n      ${tipoForcado || classificacao.tipo}` +
+        `${classificacao.dataDocumento ? ` · ${classificacao.dataDocumento}` : ""}` +
+        `${classificacao.visibilidade ? ` · ${classificacao.visibilidade}` : ""}` +
+        ` — ${classificacao.motivo}`,
+    );
   }
 
   await db.end();
