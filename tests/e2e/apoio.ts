@@ -32,6 +32,10 @@ export const CHAVE_ANON = env("NEXT_PUBLIC_SUPABASE_ANON_KEY");
 export const REGIMENTO =
   "Documentos do Condomínio/RI - Regulamento Interno - Breeze Bosque da Saúde.pdf";
 
+/** Escaneada, 0 caractere nativo — é o documento que exercita o caminho de OCR. */
+export const CONVENCAO =
+  "Documentos do Condomínio/Breeze-Bosque-da-Saude-Convencao-de-Condominio-registrada.pdf";
+
 export async function sql(comando: string): Promise<string> {
   const { stdout } = await executar("docker", [
     "exec",

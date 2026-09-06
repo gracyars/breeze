@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
 import {
+  CONVENCAO,
   criaDocumento,
   drenaFila,
   editoraComSegundoFator,
@@ -154,6 +155,77 @@ test.describe("ingestão", () => {
     expect(paginas).toBe(0);
   });
 
+  test("a Convenção escaneada passa pelo OCR e fica citável", async () => {
+    // O único documento público do acervo é imagem pura: 18 páginas, zero
+    // caractere nativo. Sem este caminho, o texto normativo-mãe do condomínio
+    // fica fora da busca — era o bloqueio que a sonda C0 existiu para destravar.
+    // Leva ~1 min: o OCR roda página a página, na CPU desta máquina.
+    test.setTimeout(300_000);
+
+    const editora = await editoraComSegundoFator(`ocr-${EXECUCAO}`);
+    const id = randomUUID();
+    const storagePath = `conv-${EXECUCAO}-${id}.pdf`;
+
+    await enviaParaStorage(CONVENCAO, storagePath);
+    const criacao = await criaDocumento(editora.aal2, {
+      id,
+      tipo: "convencao",
+      titulo: `Convenção (teste ${EXECUCAO})`,
+      storage_bucket: "documentos",
+      storage_path: storagePath,
+      status: "pendente",
+      visibilidade: "publico",
+    });
+    expect(criacao.ok).toBe(true);
+
+    await sql(
+      `select job.enfileirar('hash_dedupe','${id}'::uuid,'hash_dedupe:${id}:v1','{}'::jsonb,100)`,
+    );
+    await drenaFila();
+
+    // Toda página veio do OCR: a extração nativa devolveu vazio em todas as 18,
+    // que é o único caso em que o OCR dispara sozinho (ADR-0024).
+    const porFonte = await sql(
+      `select string_agg(fonte_texto || '=' || n, ',' order by fonte_texto)
+         from (select fonte_texto, count(*) n from public.documento_paginas
+                where documento_id = '${id}' group by 1) t`,
+    );
+    expect(porFonte).toBe("ocr=18");
+    expect(await sql(`select ocr_aplicado from public.documentos where id = '${id}'`)).toBe("t");
+
+    const confianca = Number(
+      await sql(
+        `select round(avg(confianca_ocr), 3) from public.documento_paginas where documento_id = '${id}'`,
+      ),
+    );
+    // Gatilho G1 do ADR-0024: abaixo de 0,90 a decisão de usar OCR local se
+    // reabre e a API paga volta à mesa.
+    expect(confianca).toBeGreaterThan(0.9);
+
+    // A passagem de quórum é a que um morador citaria numa assembleia.
+    const quorum = Number(
+      await sql(
+        `select count(*) from public.chunks
+          where documento_id = '${id}'
+            and tsv @@ websearch_to_tsquery('public.pt_br', 'quórum instalação')`,
+      ),
+    );
+    expect(quorum).toBeGreaterThan(0);
+
+    // O normalizador de marcador rodou dentro do pipeline: a sequência de
+    // subitens da página 12 sai correta, e é o marcador que identifica o item
+    // citado numa convenção que não é articulada.
+    const marcadores = await sql(
+      `select string_agg(m[1], ',')
+         from (select regexp_match(linha, '^((?:i|v|x)+)\\.') m
+                 from (select unnest(string_to_array(texto, chr(10))) linha
+                         from public.documento_paginas
+                        where documento_id = '${id}' and pagina = 12) l
+                where linha ~ '^(i|v|x)+\\.') t`,
+    );
+    expect(marcadores).toContain("i,ii,iii,iv,v,vi");
+  });
+
   test.afterAll(async () => {
     await sql(
       `delete from public.chunks where documento_id in
@@ -164,9 +236,12 @@ test.describe("ingestão", () => {
          (select id::text from public.documentos where titulo like '%${EXECUCAO}%');
        delete from public.documentos where titulo like '%${EXECUCAO}%';
        delete from public.papeis where pessoa_id in
-         (select id from public.pessoas where email like 'ingestao-${EXECUCAO}-%');
-       delete from public.pessoas where email like 'ingestao-${EXECUCAO}-%';
-       delete from auth.users where email like 'ingestao-${EXECUCAO}-%';`,
+         (select id from public.pessoas
+           where email like 'ingestao-${EXECUCAO}-%' or email like 'ocr-${EXECUCAO}-%');
+       delete from public.pessoas
+         where email like 'ingestao-${EXECUCAO}-%' or email like 'ocr-${EXECUCAO}-%';
+       delete from auth.users
+         where email like 'ingestao-${EXECUCAO}-%' or email like 'ocr-${EXECUCAO}-%';`,
     );
   });
 });
