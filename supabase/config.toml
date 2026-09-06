@@ -196,7 +196,11 @@ password_requirements = ""
 
 [auth.rate_limit]
 # Number of emails that can be sent per hour. Requires auth.email.smtp to be enabled.
-email_sent = 2
+# 100 aqui vale só para o stack LOCAL (Mailpit, nada sai da máquina): com 2/hora o
+# teste de ponta a ponta do magic link (tests/e2e) estoura no terceiro caso. O limite
+# que protege produção é o do provedor de e-mail + o limitador da aplicação
+# (lib/auth/limitador.ts, ADR-0003 regra 3), não este número.
+email_sent = 100
 # Number of SMS messages that can be sent per hour. Requires auth.sms to be enabled.
 sms_sent = 30
 # Number of anonymous sign-ins that can be made per hour per IP address. Requires enable_anonymous_sign_ins = true.
@@ -299,9 +303,14 @@ auth_token = "env(SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN)"
 max_enrolled_factors = 10
 
 # Control MFA via App Authenticator (TOTP)
+# TOTP é obrigatório para `editor` e `conselho` (SPEC §2.2, ADR-0003): o helper de
+# RLS só reconhece esses papéis quando o JWT traz `aal2`. Com o enrolamento
+# desligado aqui, o segundo fator não existe nem para testar — e a dívida D1
+# (o GoTrue promove no enrolamento ou só na verificação?) não teria como fechar.
+# Sonda: `node --experimental-strip-types scripts/probe/aal2-gotrue.ts`.
 [auth.mfa.totp]
-enroll_enabled = false
-verify_enabled = false
+enroll_enabled = true
+verify_enabled = true
 
 # Configure MFA via Phone Messaging
 [auth.mfa.phone]

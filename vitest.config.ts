@@ -7,6 +7,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "."),
+      // `server-only` quebra por desenho fora de Server Component; no unitário
+      // não há essa fronteira. A guarda real continua no `next build`.
+      "server-only": path.resolve(import.meta.dirname, "tests/stubs/server-only.ts"),
     },
   },
   test: {

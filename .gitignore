@@ -55,3 +55,7 @@ next-env.d.ts
 # acervo real do condomínio (PDFs com PII/financeiro) — nunca no controle de versão;
 # entra pelo pipeline de upload (SPEC §3), não pelo git.
 /Documentos do Condomínio/
+
+# Artefatos de execução do Playwright
+test-results/
+playwright-report/

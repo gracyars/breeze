@@ -1,12 +1,17 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * Playwright é usado em F0 apenas para os testes de acessibilidade do design
- * system (contraste, escala de fonte e alvo de toque) sobre /design-system.
- * QA E2E de fluxo entra em F4 (SPEC §9) e pode ampliar `testDir`.
+ * Dois usos, separados de propósito em projetos distintos:
+ *
+ * - **a11y** (F0): contraste, escala de fonte e alvo de toque sobre
+ *   /design-system. Roda em qualquer lugar, não depende de banco.
+ * - **e2e** (F1, corte C1): o fluxo de entrada de verdade — magic link, sessão,
+ *   segundo fator. **Depende do stack Supabase local de pé** (`supabase start`)
+ *   e por isso não entra no mesmo comando: `pnpm test:a11y` segue sendo o que o
+ *   CI chama hoje, e `pnpm test:e2e` é o novo. Wire-up do e2e no CI é do
+ *   `devops` — está registrado como dívida.
  */
 export default defineConfig({
-  testDir: "./tests/a11y",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
@@ -18,12 +23,19 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      testDir: "./tests/a11y",
       use: { ...devices["Desktop Chrome"] },
     },
     {
       // O morador usa celular (briefing §3). O piso de 320px vale aqui.
       name: "celular",
+      testDir: "./tests/a11y",
       use: { ...devices["Pixel 5"] },
+    },
+    {
+      name: "e2e",
+      testDir: "./tests/e2e",
+      use: { ...devices["Desktop Chrome"] },
     },
   ],
   webServer: {
