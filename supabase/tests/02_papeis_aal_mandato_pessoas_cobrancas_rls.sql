@@ -11,7 +11,7 @@
 --         ...f1 mandato vencido ontem | ...d1 JWT authenticated sem linha em pessoas
 -- ============================================================================
 begin;
-select plan(51);
+select plan(55);
 
 create function pg_temp.probe(p_role text, p_sub text, p_aal text, p_sql text)
 returns text language plpgsql as $f$
@@ -66,6 +66,41 @@ begin
   begin execute p_sql; get diagnostics n = row_count; execute 'set local role postgres'; return 'OK ('||n||')';
   exception when others then execute 'set local role postgres'; return 'ERRO['||sqlstate||']'; end;
 end $f$;
+
+-- ------------------------------------------------------ RUIDO: banco POVOADO --
+-- A suite roda contra o banco de desenvolvimento, e a partir de F1 esse banco NUNCA esta vazio:
+-- `scripts/dev/semeia-editora.ts` cria a editora (sem ela nao ha backfill — service_role nao tem
+-- INSERT em documentos), o e2e de autenticacao cria moradoras, o backfill cria acervo, o
+-- balancete cria cobrancas. Assert que so significa o que diz em banco vazio e FALSO VERDE
+-- esperando a vez: passa por sorte, nao por causa da policy.
+-- Por isso a fixture SUJA o banco de proposito, ANTES de criar os proprios atores, com linhas que
+-- imitam o estado real de F1 — inclusive uma editora com `mandato_inicio = current_date`, que foi
+-- exatamente o que abortou este arquivo em 2026-09-06 (R3 de docs/ops/divida-tecnica.md).
+-- Estas linhas nao sao atores de nenhum assert: existem so para que todo assert abaixo continue
+-- significando a MESMA coisa com o banco cheio. Prefixo `ff` em todos os uuids.
+insert into auth.users (id, instance_id, aud, role, email, created_at, updated_at) values
+ ('ff000000-0000-0000-0000-0000000000e0','00000000-0000-0000-0000-000000000000','authenticated','authenticated','ruido-editora@t.local',now(),now()),
+ ('ff000000-0000-0000-0000-0000000000a0','00000000-0000-0000-0000-000000000000','authenticated','authenticated','ruido-mora@t.local',now(),now());
+
+insert into public.unidades (id, bloco, numero, fracao_ideal) values
+ ('ff100000-0000-0000-0000-000000000901','R','901',0.01),
+ ('ff100000-0000-0000-0000-000000000902','R','902',0.01);
+
+insert into public.pessoas (id, auth_user_id, nome, cpf_hash, cpf_enc, cpf_ultimos_digitos) values
+ ('ff200000-0000-0000-0000-0000000000e0','ff000000-0000-0000-0000-0000000000e0','Editora Semeada (ruido)',decode(repeat('90',32),'hex'),'\xBB90'::bytea,'901'),
+ ('ff200000-0000-0000-0000-0000000000a0','ff000000-0000-0000-0000-0000000000a0','Moradora do e2e (ruido)',decode(repeat('91',32),'hex'),'\xBB91'::bytea,'902');
+
+insert into public.vinculos (unidade_id, pessoa_id, tipo) values
+ ('ff100000-0000-0000-0000-000000000901','ff200000-0000-0000-0000-0000000000a0','proprietario');
+
+-- A editora semeada abre mandato HOJE. E o estado normal do sistema, nao um caso de borda.
+insert into public.papeis (pessoa_id, papel, mandato_inicio) values
+ ('ff200000-0000-0000-0000-0000000000e0','editor', current_date),
+ ('ff200000-0000-0000-0000-0000000000a0','morador',current_date);
+
+insert into public.cobrancas (id, unidade_id, competencia, valor_centavos, vencimento, status) values
+ ('ff800000-0000-0000-0000-000000000901','ff100000-0000-0000-0000-000000000901',date_trunc('month',current_date)::date,41000,current_date+5,'aberta'),
+ ('ff800000-0000-0000-0000-000000000902','ff100000-0000-0000-0000-000000000902',date_trunc('month',current_date)::date,41000,current_date-30,'atrasada');
 
 -- ---------------------------------------------------------------- fixture --
 insert into auth.users (id, instance_id, aud, role, email, created_at, updated_at) values
@@ -191,10 +226,23 @@ select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000e1',
 select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000e1','aal2',
   $$select count(*)::text from (select * from public.fornecedores) x$$),
   'ERRO[42501]', 'C9 SELECT * em fornecedores e negado');
+-- C10 mede a POLICY, nao o conteudo do banco. A versao antiga listava a tabela inteira e
+-- comparava com quatro valores fixos: qualquer pessoa cadastrada fora do teste (a editora
+-- semeada, uma moradora do e2e) fazia a auditoria de seguranca falhar sem que nada da seguranca
+-- tivesse mudado (R3). O que a policy promete e (a) para ESTAS pessoas, este mascaramento, e
+-- (b) para QUALQUER pessoa que o conselho alcance, nunca algo que nao seja mascara. Sao dois
+-- asserts, e o (b) fica mais forte quanto mais povoado o banco estiver.
 select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000c1','aal2',
-  $$select string_agg(cpf_mascarado,',' order by cpf_mascarado) from public.vw_pessoas_mascaradas$$),
+  $$select string_agg(cpf_mascarado,',' order by cpf_mascarado) from public.vw_pessoas_mascaradas
+     where id::text like '20000000-%'$$),
   '***.***.111-**,***.***.222-**,***.***.333-**,***.***.444-**',
   'C10 conselho ve CPF MASCARADO pela view, nunca o cifrado');
+select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000c1','aal2',
+  $$select count(*)::text from public.vw_pessoas_mascaradas
+     where cpf_mascarado is not null
+       and cpf_mascarado !~ '^[*]{3}[.][*]{3}[.][0-9]{3}-[*]{2}$'$$),
+  '0',
+  'C10b NENHUMA linha que o conselho alcanca pela view sai fora da mascara (vale com o banco cheio)');
 select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000a1','aal1',
   $$select string_agg(nome,',' order by nome) from public.pessoas$$),
   'Ana Moradora', 'C11 morador so le a propria linha de pessoas');
@@ -220,9 +268,13 @@ select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000a1',
 select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000c1','aal1',
   $$select count(*)::text from public.cobrancas$$),
   '0', 'D4 conselho em AAL1 nao ve inadimplencia nominal');
+-- D5 e o controle de D1-D4: o conselho em AAL2 nao e filtrado. Contar `3` era contar a fixture,
+-- nao a policy — bastava uma cobranca de outro lugar para o controle quebrar. A forma correta do
+-- controle e a IGUALDADE com o total real da tabela: seja qual for o povoamento, gestao ve tudo.
 select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000c1','aal2',
   $$select count(*)::text from public.cobrancas$$),
-  '3', 'D5 conselho em AAL2 ve todas (controle)');
+  (select count(*)::text from public.cobrancas),
+  'D5 conselho em AAL2 ve TODAS as cobrancas do banco, sem filtro (controle)');
 select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000a1','aal1',
   $$select coalesce(string_agg(numero,','),'(vazio)') from public.vw_inadimplencia_nominal$$),
   '(vazio)', 'D6 vw_inadimplencia_nominal nao entrega vizinho ao morador (security_invoker)');
@@ -266,8 +318,34 @@ insert into public.pessoas (id, auth_user_id, nome) values
 -- sistema sem editor, entao a ordem importa (e ja e a prova de que a trava basica funciona).
 insert into public.papeis (id, pessoa_id, papel) values
  ('50000000-0000-0000-0000-0000000000f9','20000000-0000-0000-0000-0000000000f9','editor');
-update public.papeis set mandato_fim = current_date - 1
- where papel='editor' and pessoa_id <> '20000000-0000-0000-0000-0000000000f9';
+-- Encerrar os outros mandatos e a PRE-CONDICAO do bloco F: os triggers que ele exercita leem a
+-- tabela inteira, entao "Solo e a ultima editora" e um fato sobre o BANCO, nao sobre a fixture —
+-- e nao da para escopar. O que da para fazer e CONSTRUIR a pre-condicao de forma legal e depois
+-- CONFERIR que ela vale (F0 abaixo), em vez de supor.
+--   `least(mandato_inicio, current_date - 60)` existe por um motivo especifico e incomodo: sem
+-- ele, um mandato que comecou HOJE (a editora de `scripts/dev/semeia-editora.ts`, que e o estado
+-- normal do sistema) faz `mandato_fim = current_date - 1` violar `papeis_mandato_ck` e ABORTA o
+-- arquivo inteiro — foi o que aconteceu em 2026-09-06. Recuar `mandato_inicio` e legitimo AQUI
+-- porque isto e a montagem de um mundo de teste dentro de begin/rollback, nao uma operacao de
+-- negocio. Que a operacao de negocio correspondente ("encerrar hoje um mandato que comecou hoje")
+-- nao exista no schema e um problema do SCHEMA, e esta registrado nos dois TODO do bloco G.
+update public.papeis
+   set mandato_inicio = least(mandato_inicio, current_date - 60),
+       mandato_fim    = current_date - 1
+ where papel = 'editor'
+   and pessoa_id <> '20000000-0000-0000-0000-0000000000f9'
+   and (mandato_fim is null or mandato_fim >= current_date);
+
+-- Pre-condicao CONFERIDA, nao suposta: se um dia a montagem acima parar de produzir "so a Solo
+-- vigente", F1-F8 passariam a medir outra coisa (o trigger do ultimo editor nem dispararia) e a
+-- suite mentiria em verde. Este assert e o que impede isso.
+select is(
+  (select coalesce(string_agg(pe.nome,',' order by pe.nome),'(nenhuma)')
+     from public.papeis pa join public.pessoas pe on pe.id = pa.pessoa_id
+    where pa.papel='editor' and pe.ativa and pa.mandato_inicio <= current_date
+      and (pa.mandato_fim is null or pa.mandato_fim >= current_date)),
+  'Solo Editora',
+  'F0 pre-condicao do bloco F: a Solo e a UNICA editora vigente no banco (vale com o banco cheio)');
 
 select is( pg_temp.tenta('authenticated','00000000-0000-0000-0000-0000000000f9','aal2',
   $$update public.pessoas set ativa=false where id='20000000-0000-0000-0000-0000000000f9'$$),
@@ -334,6 +412,49 @@ select is(
       and t.tgname like '%editor%' and t.tgattr <> ''::int2vector),
   '(nenhum)',
   'F10 os triggers do ultimo editor disparam em UPDATE inteiro, nao em UPDATE OF <coluna>');
+
+-- ======================================================================
+-- G. REVOGACAO NO MESMO DIA — achado de 2026-09-06, dono NAO e este arquivo
+-- ======================================================================
+-- O mandato tem granularidade de DIA (`mandato_inicio`/`mandato_fim` sao `date`, e a vigencia e
+-- `mandato_fim >= current_date`), mas a autorizacao que ele concede e INSTANTANEA. Consequencia:
+-- nao existe forma legal de revogar hoje um mandato aberto hoje.
+--   `mandato_fim = current_date - 1`  -> `papeis_mandato_ck` recusa (fim < inicio).
+--   `mandato_fim = current_date`      -> aceito, mas a pessoa segue vigente o dia inteiro.
+--   `delete`                          -> negado a todos, de proposito (B6/B7).
+--   reescrever `mandato_inicio`       -> falsifica o registro de quem foi editora e quando.
+-- Com `editor` unica (D4), quem entrou por engano hoje fica com toda a escrita do sistema, em
+-- AAL2, ate amanha. Isso e o oposto do "acesso cessa em vinculos.fim + 0 dias" que o SPEC §7
+-- registra como veto do juridico-lgpd, e o cenario e banal: erro de cadastro, desistencia.
+-- Os dois asserts abaixo sao TODO, nao vermelhos: o conserto e mudanca de MODELO DE DADOS
+-- (SPEC §2) — cabe a ADR de `arquiteto` + `eng-supabase`, nao a este arquivo, e nao e regressao
+-- desta migracao. Eles ficam visiveis no TAP toda rodada e viram verde-inesperado no dia do
+-- conserto. O que este arquivo NAO faz e fingir que o buraco nao existe.
+insert into auth.users (id, instance_id, aud, role, email, created_at, updated_at) values
+ ('00000000-0000-0000-0000-0000000000fb','00000000-0000-0000-0000-000000000000','authenticated','authenticated','p-hoje@t.local',now(),now());
+insert into public.pessoas (id, auth_user_id, nome) values
+ ('20000000-0000-0000-0000-0000000000fb','00000000-0000-0000-0000-0000000000fb','Editora Cadastrada Hoje Por Engano');
+-- Segunda editora, para que os triggers do ULTIMO editor nao mascarem o resultado: aqui a
+-- pergunta e sobre revogar, nao sobre auto-trancamento.
+insert into public.papeis (id, pessoa_id, papel, mandato_inicio) values
+ ('50000000-0000-0000-0000-0000000000fb','20000000-0000-0000-0000-0000000000fb','editor', current_date);
+
+select todo_start('revogacao no mesmo dia nao e expressavel no schema (mandato e date, autorizacao e instantanea) — ADR de arquiteto/eng-supabase, ver docs/ops/divida-tecnica.md R4');
+
+select is( pg_temp.tenta('postgres',null,null,
+  $$update public.papeis set mandato_fim = current_date - 1
+     where id='50000000-0000-0000-0000-0000000000fb'$$),
+  'OK (1)',
+  'G1 encerrar um mandato de editor aberto HOJE e operacao legitima e deveria ser aceita');
+
+select is(
+  (select public.eh_editor_vigente_linha(pa.papel, pa.mandato_inicio, current_date, pe.ativa)::text
+     from public.papeis pa join public.pessoas pe on pe.id = pa.pessoa_id
+    where pa.id='50000000-0000-0000-0000-0000000000fb'),
+  'false',
+  'G2 mandato encerrado HOJE deixa de ser vigente HOJE (SPEC §7: o acesso cessa em fim + 0 dias)');
+
+select todo_end();
 
 select * from finish();
 rollback;

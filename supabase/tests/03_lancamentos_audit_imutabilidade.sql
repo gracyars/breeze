@@ -12,7 +12,7 @@
 --         ...f1 mandato vencido ontem | ...d1 JWT authenticated sem linha em pessoas
 -- ============================================================================
 begin;
-select plan(34);
+select plan(35);
 
 create function pg_temp.probe(p_role text, p_sub text, p_aal text, p_sql text)
 returns text language plpgsql as $f$
@@ -67,6 +67,36 @@ begin
   begin execute p_sql; get diagnostics n = row_count; execute 'set local role postgres'; return 'OK ('||n||')';
   exception when others then execute 'set local role postgres'; return 'ERRO['||sqlstate||']'; end;
 end $f$;
+
+-- ------------------------------------------------------ RUIDO: banco POVOADO --
+-- Marca o topo da cadeia ANTES de qualquer escrita deste arquivo: os asserts de trilha olham
+-- so as linhas que ESTE teste produziu, nunca o historico ja no banco (mesmo mecanismo de
+-- 05_trilha_pii_anonimizacao.sql). Sem isso, "a ultima linha de audit.log" muda de significado
+-- conforme quem usou o stack local por ultimo.
+create temp table _base on commit drop as select coalesce(max(seq),0) as seq from audit.log;
+
+-- E escrituracao alheia, para que os asserts de "ninguem altera/apaga lancamento" tenham o que
+-- tentar destruir alem da propria fixture: `delete from public.lancamentos` sem WHERE so prova
+-- alguma coisa se houver linha de outra gente no caminho.
+insert into auth.users (id, instance_id, aud, role, email, created_at, updated_at) values
+ ('ff000000-0000-0000-0000-0000000000e0','00000000-0000-0000-0000-000000000000','authenticated','authenticated','ruido-lanc-editora@t.local',now(),now());
+insert into public.pessoas (id,auth_user_id,nome) values
+ ('ff200000-0000-0000-0000-0000000000e0','ff000000-0000-0000-0000-0000000000e0','Editora Semeada (ruido)');
+insert into public.papeis (pessoa_id,papel,mandato_inicio) values
+ ('ff200000-0000-0000-0000-0000000000e0','editor', current_date);
+insert into public.contas (id,codigo,nome,natureza,nivel,aceita_lancamento) values
+ ('ff400000-0000-0000-0000-000000000001','8','Raiz do acervo real','despesa',1,false);
+insert into public.contas (id,codigo,nome,natureza,nivel,conta_pai_id,aceita_lancamento) values
+ ('ff400000-0000-0000-0000-000000000002','8.01','Sub do acervo real','despesa',2,'ff400000-0000-0000-0000-000000000001',false);
+insert into public.contas (id,codigo,nome,natureza,nivel,conta_pai_id,aceita_lancamento) values
+ ('ff400000-0000-0000-0000-000000000003','8.01.01','Conta do acervo real','despesa',3,'ff400000-0000-0000-0000-000000000002',true);
+insert into public.documentos (id,tipo,titulo,storage_path,sha256,paginas,status,visibilidade,publicado_em,publicado_por) values
+ ('ff300000-0000-0000-0000-000000000002','balancete','Balancete real fev/2026','real-bal.pdf',decode(repeat('90',32),'hex'),8,'publicado','autenticado',now(),'ff200000-0000-0000-0000-0000000000e0');
+insert into public.lancamentos (id,data_competencia,conta_id,historico,valor_centavos,tipo,documento_id,pagina_origem,criado_por) values
+ ('ff600000-0000-0000-0000-000000000001',date_trunc('month',current_date)::date,'ff400000-0000-0000-0000-000000000003',
+  'Despesa do balancete real',777000,'despesa','ff300000-0000-0000-0000-000000000002',1,'ff200000-0000-0000-0000-0000000000e0');
+insert into public.lancamento_anexos (lancamento_id,storage_path,sha256,tipo,enviado_por) values
+ ('ff600000-0000-0000-0000-000000000001','real-nf-001.pdf',decode(repeat('9a',32),'hex'),'nota_fiscal','ff200000-0000-0000-0000-0000000000e0');
 
 -- ---------------------------------------------------------------- fixture --
 insert into auth.users (id, instance_id, aud, role, email, created_at, updated_at) values
@@ -220,7 +250,12 @@ select is( (select depois->>'cpf_enc' from audit.log
              where tabela='pessoas' and acao='INSERT'
                and registro_id='20000000-0000-0000-0000-0000000000e1' order by seq desc limit 1),
   '[REDIGIDO]', 'D7 cpf_enc entra REDIGIDO na trilha (a trilha nao vira 2a copia do CPF)');
-select is( (select actor_papel from audit.log where tabela='lancamentos' and acao='INSERT' order by seq desc limit 1),
+-- `order by seq desc limit 1` sobre a tabela inteira responde "a ultima linha do BANCO", nao "a
+-- ultima linha DESTE teste" — resposta diferente conforme o povoamento. A marca d'agua `_base`
+-- prende o assert ao que este arquivo escreveu.
+select is( (select actor_papel from audit.log
+             where seq > (select seq from _base)
+               and tabela='lancamentos' and acao='INSERT' order by seq desc limit 1),
   'editor', 'D8 a trilha grava o papel VIGENTE do ator, nao o claim do JWT');
 
 -- ======================================================================
@@ -242,9 +277,25 @@ select is(
   'E2 ignorada a genese, a cadeia recomputada bate linha a linha (o esquema de hash e solido)');
 
 -- Adultera uma linha do meio e confirma que a verificacao acusa.
+-- `seq` da ORDEM, nao ENDERECO (SPEC §7): toda transacao abortada queima um nextval, entao
+-- `max(seq)-1` pode simplesmente nao existir — e ai o UPDATE casa ZERO linhas, nada e adulterado,
+-- e o assert vira vermelho anunciando "a adulteracao nao foi detectada" quando na verdade nao
+-- houve adulteracao nenhuma. O proprio `audit.verificar_cadeia` foi corrigido por causa disso
+-- (V5-R, 2a rodada); o teste continuava cometendo o mesmo erro. Aqui a condicao e FORCADA antes
+-- de adulterar, para que a correcao nao dependa de sorte de sequencia.
+do $$ begin
+  insert into public.pessoas (id,nome) values ('ff200000-0000-0000-0000-00000000fa11','Queima Nextval');
+  raise exception 'aborta de proposito, queimando o seq logo abaixo do topo';
+exception when others then null; end $$;
+insert into public.pessoas (id,nome) values ('ff200000-0000-0000-0000-00000000fa12','Depois Do Gap');
+
+select ok(
+  not exists (select 1 from audit.log where seq = (select max(seq)-1 from audit.log)),
+  'E2b a condicao adversarial existe: ha um gap de seq logo abaixo do topo da cadeia');
+
 alter table audit.log disable trigger audit_log_imutavel_linha;
 update audit.log set depois = jsonb_set(coalesce(depois,'{}'::jsonb),'{adulterado}','true'::jsonb)
- where seq = (select max(seq)-1 from audit.log);
+ where seq = (select l.seq from audit.log l order by l.seq desc offset 1 limit 1);
 alter table audit.log enable trigger audit_log_imutavel_linha;
 select isnt(
   coalesce((select string_agg(v.seq::text||': '||v.motivo,'; ')

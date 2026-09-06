@@ -39,8 +39,13 @@ select is( (select data_type from information_schema.columns
              where table_schema='audit' and table_name='acesso' and column_name='actor_pessoa_id'),
   'uuid', 'A3 audit.acesso.actor_pessoa_id e uuid, nao nome');
 -- actor_papel e text mas nao e PII: guarda o VALOR DO ENUM public.papel, nao identidade.
-select ok( (select actor_papel from audit.log order by seq desc limit 1) is null
-        or (select actor_papel from audit.log order by seq desc limit 1)
+-- Escopado por `_base`: "a ultima linha de audit.log" sem escopo responde sobre o BANCO, nao
+-- sobre este teste — e a resposta muda conforme quem usou o stack local por ultimo. Aqui a
+-- pergunta e sobre a linha que ESTA fixture produziu.
+select ok( (select actor_papel from audit.log
+             where seq > (select seq from _base) order by seq desc limit 1) is null
+        or (select actor_papel from audit.log
+             where seq > (select seq from _base) order by seq desc limit 1)
              in ('editor','conselho','morador'),
   'A4 audit.log.actor_papel so contem valor do enum public.papel, nunca identidade');
 

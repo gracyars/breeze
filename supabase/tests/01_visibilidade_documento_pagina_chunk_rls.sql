@@ -18,7 +18,7 @@
 --         ...f1 mandato vencido ontem | ...d1 JWT authenticated sem linha em pessoas
 -- ============================================================================
 begin;
-select plan(47);
+select plan(48);
 
 -- ---------------------------------------------------------------- helpers --
 create function pg_temp.probe(p_role text, p_sub text, p_aal text, p_sql text)
@@ -74,6 +74,41 @@ begin
   begin execute p_sql; get diagnostics n = row_count; execute 'set local role postgres'; return 'OK ('||n||')';
   exception when others then execute 'set local role postgres'; return 'ERRO['||sqlstate||']'; end;
 end $f$;
+
+-- ------------------------------------------------------ RUIDO: banco POVOADO --
+-- Este arquivo roda contra o banco de desenvolvimento, que a partir de F1 tem ACERVO dentro: o
+-- backfill publica a convencao (`publico`), as atas (`autenticado`) e as atas de conselho. Um
+-- assert que lista a tabela inteira e compara com os titulos da fixture nao mede a policy, mede
+-- o conteudo do banco — e vira vermelho (ou pior, verde por sorte) conforme quem usou o stack
+-- local por ultimo. Entao a fixture SUJA o banco de proposito, ANTES de criar os proprios
+-- documentos, com acervo que imita o real. Prefixo `ff` em todos os uuids.
+insert into auth.users (id, instance_id, aud, role, email, created_at, updated_at) values
+ ('ff000000-0000-0000-0000-0000000000e0','00000000-0000-0000-0000-000000000000','authenticated','authenticated','ruido-rls-editora@t.local',now(),now());
+insert into public.pessoas (id, auth_user_id, nome) values
+ ('ff200000-0000-0000-0000-0000000000e0','ff000000-0000-0000-0000-0000000000e0','Editora Semeada (ruido)');
+insert into public.papeis (pessoa_id, papel, mandato_inicio) values
+ ('ff200000-0000-0000-0000-0000000000e0','editor', current_date);
+
+insert into public.documentos (id,tipo,titulo,storage_path,sha256,paginas,status,visibilidade,
+                               publicado_em,publicado_por) values
+ ('ff300000-0000-0000-0000-000000000001','convencao','Convencao do Condominio (acervo real)','real-conv.pdf',decode(repeat('90',32),'hex'),42,'publicado','publico',now(),'ff200000-0000-0000-0000-0000000000e0'),
+ ('ff300000-0000-0000-0000-000000000002','ata_assembleia','Ata AGE 04.02.2026 (acervo real)','real-age.pdf',decode(repeat('91',32),'hex'),36,'publicado','autenticado',now(),'ff200000-0000-0000-0000-0000000000e0'),
+ ('ff300000-0000-0000-0000-000000000003','ata_conselho','Ata do conselho (acervo real)','real-cons.pdf',decode(repeat('92',32),'hex'),4,'publicado','conselho',now(),'ff200000-0000-0000-0000-0000000000e0');
+
+insert into public.documento_paginas (documento_id,pagina,texto,visibilidade) values
+ ('ff300000-0000-0000-0000-000000000001',1,'CONVENCAO REAL P1',null),
+ ('ff300000-0000-0000-0000-000000000001',2,'CONVENCAO REAL P2',null),
+ ('ff300000-0000-0000-0000-000000000002',1,'ATA REAL P1',null),
+ ('ff300000-0000-0000-0000-000000000003',1,'ATA CONSELHO REAL P1',null);
+
+insert into public.chunks (documento_id,pagina_ini,pagina_fim,ordem,texto) values
+ ('ff300000-0000-0000-0000-000000000001',1,2,0,'CHUNK CONVENCAO REAL'),
+ ('ff300000-0000-0000-0000-000000000002',1,1,0,'CHUNK ATA REAL'),
+ ('ff300000-0000-0000-0000-000000000003',1,1,0,'CHUNK ATA CONSELHO REAL');
+
+insert into storage.objects (bucket_id,name) values
+ ('documentos','real-age.pdf'), ('documentos','real-cons.pdf'),
+ ('publicos','real-conv.pdf'), ('anexos-financeiros','real-nf-001.pdf');
 
 -- ---------------------------------------------------------------- fixture --
 insert into auth.users (id, instance_id, aud, role, email, created_at, updated_at) values
@@ -164,10 +199,24 @@ insert into storage.objects (bucket_id,name) values
 -- ======================================================================
 -- A. Linha do documento (app.documento_visivel) — base de comparação
 -- ======================================================================
+-- A1 mede a POLICY, nao o inventario do banco. A versao antiga agregava `documentos` inteira e
+-- comparava com um titulo: a primeira convencao publicada de verdade pelo backfill quebrava a
+-- auditoria de seguranca sem que a seguranca tivesse mudado. Sao duas afirmacoes distintas, e a
+-- segunda (A1b) e a que de fato prende a policy — ela fica MAIS forte quanto mais acervo houver.
 select is( pg_temp.probe('anon',null,null,
-  $$select string_agg(titulo,'|' order by titulo) from public.documentos$$),
+  $$select coalesce(string_agg(titulo,'|' order by titulo),'(vazio)') from public.documentos
+     where id::text like '30000000-%'$$),
   'Convencao publica',
-  'A1 anonimo so enxerga a linha do documento cujo PISO e publico');
+  'A1 entre os documentos da fixture, o anonimo so enxerga a linha cujo PISO e publico');
+
+-- Containment, sem copiar o predicado: nao reescreve `app.documento_visivel` (copia diverge,
+-- SPEC §7), so afirma a condicao NECESSARIA — toda linha que o anonimo alcanca, seja da fixture
+-- ou do acervo real, e publicada e de piso publico. Vale em banco vazio e em banco cheio.
+select is( pg_temp.probe('anon',null,null,
+  $$select count(*)::text from public.documentos
+     where visibilidade <> 'publico' or status <> 'publicado'$$),
+  '0',
+  'A1b NENHUMA linha que o anonimo alcanca em documentos foge de publicado+publico (banco cheio)');
 
 select is( pg_temp.probe('authenticated','00000000-0000-0000-0000-0000000000b1','aal1',
   $$select count(*)::text from public.documentos where id='30000000-0000-0000-0000-000000000004'$$),
