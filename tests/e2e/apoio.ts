@@ -32,6 +32,14 @@ export const CHAVE_ANON = env("NEXT_PUBLIC_SUPABASE_ANON_KEY");
 export const REGIMENTO =
   "Documentos do Condomínio/RI - Regulamento Interno - Breeze Bosque da Saúde.pdf";
 
+/**
+ * Outro documento nativo do acervo, para teste que não pode esbarrar na
+ * deduplicação: dois testes do mesmo arquivo subindo o Regimento fazem o segundo
+ * ser recusado como duplicata — corretamente — e medir um documento vazio.
+ */
+export const PROCEDIMENTOS_REFORMA =
+  "Documentos do Condomínio/PROCEDIMENTOS PARA EXECUÇÃO DE REFORMAS BREEZE + ANEXOS.pdf";
+
 /** Escaneada, 0 caractere nativo — é o documento que exercita o caminho de OCR. */
 export const CONVENCAO =
   "Documentos do Condomínio/Breeze-Bosque-da-Saude-Convencao-de-Condominio-registrada.pdf";

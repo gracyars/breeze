@@ -765,6 +765,14 @@ create table public.documentos (
   tem_paginas_mistas boolean not null default false,
   versao_pipeline int not null default 1,   -- idempotência do reprocessamento (SPEC §3)
   metadados      jsonb not null default '{}'::jsonb,  -- extração da classificação (SPEC §3.5)
+  -- [F1/ADR-0026, corte C4, 2026-09-06] Eixo de ESTADO DA MÁQUINA, ORTOGONAL a `status`.
+  -- NULL = sem índice de busca válido para a versao_pipeline corrente. Rebaixar `status` para
+  -- sinalizar isto faria o documento sumir INTEIRO da RLS do morador (que exige
+  -- status='publicado') — estrago maior que o problema (ADR-0026 §3). Escrita EXCLUSIVA de três
+  -- triggers (chunks_marca_indexado, chunks_invalida_documento,
+  -- documentos_versao_pipeline_invalida_indexacao) — nenhum código de aplicação escreve aqui.
+  -- NUNCA participa de autorização (INV-13, docs/invariantes/INV-13-...).
+  indexado_em    timestamptz,
   publicado_em   timestamptz,
   publicado_por  uuid references public.pessoas(id),
   erro_detalhe   text,
@@ -786,6 +794,9 @@ create index documentos_mistos_idx        on public.documentos (id) where tem_pa
 create index documentos_ano_idx           on public.documentos ((extract(year from coalesce(competencia, data_documento))));
 create index documentos_titulo_trgm_idx   on public.documentos using gin (titulo gin_trgm_ops);
 create index documentos_metadados_idx     on public.documentos using gin (metadados jsonb_path_ops);
+-- [F1/ADR-0026, corte C4] Sustenta a sentinela (app.documentos_fora_da_busca, §11.2) sem varrer.
+create index documentos_fora_da_busca_idx on public.documentos (id)
+  where status = 'publicado' and indexado_em is null;
 
 -- Trigger de visibilidade: 'publico' só para tipo com permite_publico.
 -- Não pode ser CHECK (CHECK não faz subconsulta), e não pode ficar só na aplicação:
@@ -1762,10 +1773,50 @@ grant execute on function job.enfileirar(text, uuid, text, jsonb, int) to authen
 
 SECURITY DEFINER porque `job.fila` não tem GRANT direto para `authenticated` (schema fora do
 PostgREST). Todo enfileiramento — Server Action de upload, o worker ao concluir um estágio, o
-trigger invalidador de chunks (ADR-0026 caminho 3, corte C4, **ainda não implementado**), ação
+trigger invalidador de chunks (ADR-0026 caminho 3, **corte C4, implementado 2026-09-06**), ação
 humana de curadoria, comando de reprocessamento, botão "tentar de novo" — passa por esta função.
 `insert` direto em `job.fila` não existe em lugar nenhum: `authenticated` e `anon` não têm GRANT
 na tabela, só EXECUTE na função (testado em `supabase/tests/07_job_enfileirar_idempotencia_parcial.sql`).
+
+### 11.2 Reenfileiramento automático e a sentinela — [F1/ADR-0026, corte C4]
+
+Três triggers, em `20260906140000_reprocessamento_enfileirado_e_sentinela.sql`, fazem
+"apagou implica pediu para refazer" ser uma propriedade do banco, não promessa do worker:
+
+- `chunks_marca_indexado` (`AFTER INSERT` em `chunks`) — seta `documentos.indexado_em = now()`
+  quando um chunk da versão CORRENTE do pipeline é inserido.
+- `chunks_invalida_documento` (`AFTER DELETE` em `chunks`) — zera `indexado_em` e chama
+  `job.enfileirar('chunking', ...)` quando um chunk da versão corrente é apagado, por QUALQUER
+  caminho (invalidador de página, ou "à mão" por `service_role`). `on conflict do nothing` (índice
+  parcial, §11) absorve o caso comum: o próprio worker apagando+reinserindo na mesma transação.
+- `documentos_versao_pipeline_invalida_indexacao` (`BEFORE UPDATE OF versao_pipeline` em
+  `documentos`) — zera `indexado_em` e enfileira para a versão NOVA; bumpar a versão não apaga
+  nenhum chunk (a cauda velha fica), então o mecanismo acima nunca dispararia sozinho.
+- `documento_paginas_invalida_chunks_afetados` (baseline 08) passou a disparar também em `DELETE`,
+  não só `INSERT`/`UPDATE OF visibilidade` — apagar uma página com override e derrubá-la para o
+  piso do documento podia quebrar a uniformidade de um chunk existente sem deixar rastro.
+
+```sql
+create view app.documentos_fora_da_busca as
+select d.id as documento_id, d.titulo, d.tipo, d.status, d.visibilidade, d.versao_pipeline,
+       d.indexado_em, d.atualizado_em, j.tem_job_ativo, j.job_mais_antigo_desde
+from public.documentos d
+left join lateral (
+  select count(*) > 0 as tem_job_ativo, min(f.criado_em) as job_mais_antigo_desde
+    from job.fila f
+   where f.tipo = 'chunking' and f.status in ('pendente','processando')
+     and f.payload ->> 'documento_id' = d.id::text
+) j on true
+where app.eh_gestao() and d.status = 'publicado' and d.indexado_em is null;
+```
+
+`security_invoker = false` (exceção documentada, mesma classe de `vw_inadimplencia_agregada`
+abaixo, §14): precisa ler `job.fila`, que não tem GRANT para papel de usuário nenhum.
+`app.eh_gestao()` no `WHERE` é defesa em profundidade (achado V6) — `GRANT select` vai só para
+`authenticated`, nunca `anon`. **Mostra o documento mesmo com job ativo** de propósito — é o
+sinal "fora da busca AGORA" (INV-13); `tem_job_ativo`/`job_mais_antigo_desde` deixam quem CONSOME
+a view (UI, runbook) distinguir "sendo reindexado" de "ninguém encarregado" sem duplicar a query.
+Prova completa, matriz e testes vermelhos: `docs/invariantes/INV-13-...md`.
 
 ---
 
@@ -1921,6 +1972,7 @@ de autorização (ADR-0012, alternativa descartada).
 | `vw_pessoas_mascaradas` | F0 | `id, nome, email, cpf_mascarado` | `cpf_mascarado = '***.***.' \|\| cpf_ultimos_digitos \|\| '-**'`; não toca `cpf_enc` |
 | `vw_documentos_publicados` | F1 | acervo com status `publicado` | conveniência de listagem |
 | `vw_lancamentos_com_comprovante` | F2/F3 | lançamento + contagem de anexos por tipo | morador vê que o comprovante **existe**, sem acessar o arquivo |
+| `app.documentos_fora_da_busca` | F1 | documento publicado sem índice de busca válido + sinal de job ativo | **fora da tabela acima de propósito**: vive em `app` (fora do `db.exposed_schemas` do PostgREST), gestão-only, `security_invoker=false` — ver §11.2 |
 
 > `SUM(bigint)` devolve `numeric` no Postgres (promoção para evitar overflow). O código de
 > aplicação precisa esperar `numeric`, não `bigint` (ADR-0010).

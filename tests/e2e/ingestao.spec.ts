@@ -6,6 +6,7 @@ import { expect, test } from "@playwright/test";
 import {
   CONVENCAO,
   criaDocumento,
+  PROCEDIMENTOS_REFORMA,
   drenaFila,
   editoraComSegundoFator,
   enviaParaStorage,
@@ -155,6 +156,92 @@ test.describe("ingestão", () => {
     expect(paginas).toBe(0);
   });
 
+  test("reprocessar documento publicado não o derruba da vista do morador", async () => {
+    // O ADR-0026 separa `indexado_em` de `status` justamente para que "fora da
+    // busca" não signifique "fora do acervo". O worker quase desfez isso por
+    // outra porta: o estágio de chunking marcava `em_revisao` sem olhar o status
+    // anterior, então reclassificar uma página de documento publicado o fazia
+    // sumir para o morador até a fila ser drenada.
+    const editora = await editoraComSegundoFator(`reproc-${EXECUCAO}`);
+    const id = randomUUID();
+    const storagePath = `reproc-${EXECUCAO}-${id}.pdf`;
+
+    await enviaParaStorage(PROCEDIMENTOS_REFORMA, storagePath);
+    const criacao = await criaDocumento(editora.aal2, {
+      id,
+      tipo: "documentacao_obra",
+      titulo: `Procedimentos de reforma ${EXECUCAO}`,
+      storage_bucket: "documentos",
+      storage_path: storagePath,
+      status: "pendente",
+      // `autenticado`, não `publico`: a visibilidade do documento é o **piso**, e
+      // a página só pode ser igual ou mais permissiva (ADR-0019). Num documento
+      // já público não existe reclassificação que mude alguma coisa — foi assim
+      // que a primeira versão deste teste passou verde com o defeito presente.
+      visibilidade: "autenticado",
+    });
+    expect(criacao.ok).toBe(true);
+    await sql(
+      `select job.enfileirar('hash_dedupe','${id}'::uuid,'hash_dedupe:${id}:v1','{}'::jsonb,100)`,
+    );
+    await drenaFila();
+
+    await sql(
+      `update public.documentos
+          set status = 'publicado', publicado_em = now(), publicado_por = '${editora.pessoaId}'
+        where id = '${id}'`,
+    );
+
+    // Trava a lacuna que fez a primeira versão deste teste medir um documento
+    // vazio: se a deduplicação recusar o arquivo, não há chunk nenhum e todo o
+    // resto do teste passa sem exercitar nada.
+    const chunksAntes = Number(
+      await sql(`select count(*) from public.chunks where documento_id = '${id}'`),
+    );
+    expect(chunksAntes).toBeGreaterThan(0);
+    expect(
+      await sql(`select coalesce(indexado_em::text,'null') from public.documentos where id = '${id}'`),
+    ).not.toBe("null");
+
+    // Reclassificar a página para MAIS permissiva muda o nível efetivo: os chunks
+    // que a intersectam são apagados e o documento é reenfileirado (ADR-0026).
+    await sql(
+      `update public.documento_paginas set visibilidade = 'publico'
+        where documento_id = '${id}' and pagina = 14`,
+    );
+
+    // Durante a invalidação, o documento continua publicado — quem sinaliza
+    // "fora da busca" é `indexado_em`, não o status.
+    expect(await sql(`select status from public.documentos where id = '${id}'`)).toBe(
+      "publicado",
+    );
+    expect(
+      await sql(`select coalesce(indexado_em::text, 'null') from public.documentos where id = '${id}'`),
+    ).toBe("null");
+    expect(
+      Number(
+        await sql(
+          `select count(*) from job.fila
+            where payload->>'documento_id' = '${id}' and status = 'pendente'`,
+        ),
+      ),
+    ).toBeGreaterThan(0);
+
+    await drenaFila();
+
+    // Depois de reindexar, continua publicado — e volta a ter chunks.
+    expect(await sql(`select status from public.documentos where id = '${id}'`)).toBe(
+      "publicado",
+    );
+    const chunks = Number(
+      await sql(`select count(*) from public.chunks where documento_id = '${id}'`),
+    );
+    expect(chunks).toBeGreaterThan(0);
+    expect(
+      await sql(`select coalesce(indexado_em::text,'null') from public.documentos where id = '${id}'`),
+    ).not.toBe("null");
+  });
+
   test("a Convenção escaneada passa pelo OCR e fica citável", async () => {
     // O único documento público do acervo é imagem pura: 18 páginas, zero
     // caractere nativo. Sem este caminho, o texto normativo-mãe do condomínio
@@ -237,11 +324,17 @@ test.describe("ingestão", () => {
        delete from public.documentos where titulo like '%${EXECUCAO}%';
        delete from public.papeis where pessoa_id in
          (select id from public.pessoas
-           where email like 'ingestao-${EXECUCAO}-%' or email like 'ocr-${EXECUCAO}-%');
+           where email like 'ingestao-${EXECUCAO}-%'
+              or email like 'ocr-${EXECUCAO}-%'
+              or email like 'reproc-${EXECUCAO}-%');
        delete from public.pessoas
-         where email like 'ingestao-${EXECUCAO}-%' or email like 'ocr-${EXECUCAO}-%';
+         where email like 'ingestao-${EXECUCAO}-%'
+            or email like 'ocr-${EXECUCAO}-%'
+            or email like 'reproc-${EXECUCAO}-%';
        delete from auth.users
-         where email like 'ingestao-${EXECUCAO}-%' or email like 'ocr-${EXECUCAO}-%';`,
+         where email like 'ingestao-${EXECUCAO}-%'
+            or email like 'ocr-${EXECUCAO}-%'
+            or email like 'reproc-${EXECUCAO}-%';`,
     );
   });
 });

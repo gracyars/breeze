@@ -312,8 +312,24 @@ export async function chunking(ctx: Contexto, job: Job): Promise<void> {
 
     // `em_revisao`, não `publicado`: classificação e visibilidade passam por
     // conferência humana antes de qualquer coisa aparecer (SPEC §3.5).
+    //
+    // **`and status <> 'publicado'` não é detalhe.** Sem essa condição, todo
+    // reprocessamento de um documento já publicado — reclassificar uma página,
+    // corrigir o chunker, forçar OCR — rebaixaria o status e o documento sumiria
+    // da vista do morador enquanto a fila não fosse drenada. É exatamente o
+    // estrago que o ADR-0026 §3 veta ao separar `indexado_em` de `status`,
+    // entrando por outra porta: a do worker. Documento publicado que reindexa
+    // continua publicado; quem sinaliza "fora da busca" é `indexado_em`.
     await ctx.db.query(
-      `update public.documentos set status = 'em_revisao', erro_detalhe = null where id = $1`,
+      `update public.documentos
+          set status = 'em_revisao', erro_detalhe = null
+        where id = $1 and status <> 'publicado'`,
+      [documentoId],
+    );
+    // O erro é limpo mesmo no documento publicado: reprocessou e deu certo,
+    // então a mensagem antiga viraria mentira na tela.
+    await ctx.db.query(
+      `update public.documentos set erro_detalhe = null where id = $1 and status = 'publicado'`,
       [documentoId],
     );
 

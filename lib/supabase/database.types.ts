@@ -757,6 +757,7 @@ export type Database = {
           data_documento: string | null
           erro_detalhe: string | null
           id: string
+          indexado_em: string | null
           metadados: Json
           ocr_aplicado: boolean
           paginas: number | null
@@ -781,6 +782,7 @@ export type Database = {
           data_documento?: string | null
           erro_detalhe?: string | null
           id?: string
+          indexado_em?: string | null
           metadados?: Json
           ocr_aplicado?: boolean
           paginas?: number | null
@@ -805,6 +807,7 @@ export type Database = {
           data_documento?: string | null
           erro_detalhe?: string | null
           id?: string
+          indexado_em?: string | null
           metadados?: Json
           ocr_aplicado?: boolean
           paginas?: number | null
