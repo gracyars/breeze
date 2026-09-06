@@ -25,9 +25,14 @@ export async function Cabecalho() {
           Buscar
         </Link>
         {sessao && (
-          <Link href="/acervo" className="text-acao">
-            Acervo
-          </Link>
+          <>
+            <Link href="/acervo" className="text-acao">
+              Acervo
+            </Link>
+            <Link href="/curadoria" className="text-acao">
+              Conferência
+            </Link>
+          </>
         )}
         <span className="flex-1" />
         {sessao ? (

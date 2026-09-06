@@ -73,6 +73,8 @@ export async function auth(
 export interface Editora {
   email: string;
   pessoaId: string;
+  /** Segredo do TOTP — o teste faz o papel do app autenticador da pessoa. */
+  segredoTotp: string;
   /** Sessão só com o primeiro fator — na prática, uma moradora. */
   aal1: string;
   /** Sessão com o segundo fator verificado — só ela publica. */
@@ -139,6 +141,7 @@ export async function editoraComSegundoFator(prefixo: string): Promise<Editora> 
   return {
     email,
     pessoaId,
+    segredoTotp: fator.totp.secret,
     aal1: sessao.access_token,
     aal2: promovido.access_token,
   };
@@ -216,4 +219,36 @@ export async function buscaComo(
     secao: string | null;
     trecho: string;
   }[];
+}
+
+const URL_MAILPIT = "http://127.0.0.1:54324";
+
+/**
+ * O link do magic link, lido da caixa de entrada local.
+ *
+ * Pelo Mailpit, como um morador leria no e-mail dele — o teste não pula a etapa
+ * do e-mail, porque é justamente ela que o produto usa no lugar de senha.
+ */
+export async function linkDoUltimoEmail(destinatario: string): Promise<string | null> {
+  for (let tentativa = 0; tentativa < 20; tentativa += 1) {
+    const lista = (await (
+      await fetch(`${URL_MAILPIT}/api/v1/messages`)
+    ).json()) as { messages: { ID: string; To: { Address: string }[] }[] };
+
+    const mensagem = lista.messages.find((m) =>
+      m.To.some((t) => t.Address === destinatario),
+    );
+    if (mensagem) {
+      const corpo = (await (
+        await fetch(`${URL_MAILPIT}/api/v1/message/${mensagem.ID}`)
+      ).json()) as { HTML?: string; Text?: string };
+      const texto = `${corpo.HTML ?? ""}${corpo.Text ?? ""}`;
+      const link = texto
+        .match(/https?:\/\/[^"'\s<>]+/g)
+        ?.find((u) => u.includes("verify"));
+      return link ? link.replace(/&amp;/g, "&") : null;
+    }
+    await new Promise((resolva) => setTimeout(resolva, 250));
+  }
+  return null;
 }
