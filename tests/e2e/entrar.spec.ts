@@ -48,7 +48,9 @@ async function sql(comando: string): Promise<string> {
     "postgres",
     "-d",
     "postgres",
-    "-tAc",
+    // `-q`: sem ele o psql imprime "INSERT 0 1" junto com o valor de `returning`,
+    // e o id volta com lixo colado.
+    "-qtAc",
     comando,
   ]);
   return stdout.trim();
@@ -193,7 +195,8 @@ test.describe("entrada", () => {
     await page.goto(link!);
 
     await page.goto("/seguranca");
-    await expect(page.getByText(email)).toBeVisible();
+    // `.first()`: o e-mail aparece no cabeçalho e no cartão da página.
+    await expect(page.getByText(email).first()).toBeVisible();
     // `aal2` é propriedade da sessão, não da conta (sonda D1): entrar por magic
     // link nunca basta para papel privilegiado.
     await expect(page.getByText(/só o primeiro fator/i)).toBeVisible();

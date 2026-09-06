@@ -61,7 +61,7 @@ anterior a 2025 no acervo.
 | 40 | Prestação de Contas/PrestContas janeiro 2026.pdf | Balancete mensal | 2 | NATIVO | Sim | Não | Autenticado |
 | 41 | Prestação de Contas/PrestContas fevereiro 2026.pdf | Balancete mensal | 2 | NATIVO | Sim | Não | Autenticado |
 | 42 | Previsão Orçamentária - Até 3 meses - dez-2025.pdf | Previsão orçamentária (escopo trimestral, não anual) | 4 | NATIVO | Sim | Não | Autenticado |
-| 43 | RI - Regulamento Interno - Breeze Bosque da Saúde.pdf | **Regimento interno** | 23 | NATIVO | Não | **Sim (191 artigos)** | Público |
+| 43 | RI - Regulamento Interno - Breeze Bosque da Saúde.pdf | **Regimento interno** | 23 | NATIVO | Não | **Sim — ver correção abaixo** | Público |
 
 \* Menciona balancete/receita/despesa/orçamento em prosa explicativa, mas sem tabela estruturada extraível.
 
@@ -120,3 +120,23 @@ aprovação); nenhuma prestação de contas anual nem ata de conselho fiscal, es
 condomínio não completou um ano; e há uma duplicata exata (mesmo hash) entre dois arquivos de
 lembrete de assembleia — útil como caso de teste real para a deduplicação por `sha256` prevista
 na skill de OCR.
+
+
+---
+
+## Correção de 2026-09-06 — "191 artigos" estava errado
+
+A sondagem contou **ocorrências** da palavra "Art." e reportou 191 artigos no Regimento (e os
+mesmos 191 dentro da ata de 04.02.2026, que o embute). Ao chunkizar o documento de verdade, o
+número não se sustentou: são **187 linhas que começam com "Artigo"**, mas só **25 números
+distintos**, com máximo 393 — porque parte das ocorrências são citações de artigo de norma externa
+(Código Civil) e, principalmente, porque o **Regimento reinicia a numeração a cada um dos seus 24
+capítulos**. Existem 24 "Artigo 1º" no mesmo documento.
+
+Consequência que não é cosmética: **"Artigo 5º do Regimento" não identifica nada.** A unidade
+citável é `capítulo + artigo + página`. Isso está registrado como correção no SPEC §4 e
+implementado em `lib/ingestao/chunker.ts` (a seção viaja com o chunk; nenhum chunk atravessa
+capítulo).
+
+Lição para a próxima sondagem: contar ocorrência de padrão é medir o texto, não a estrutura. A
+estrutura só apareceu quando alguém processou o documento inteiro e olhou a saída.

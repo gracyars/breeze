@@ -12,7 +12,13 @@ import { defineConfig, devices } from "@playwright/test";
  *   `devops` — está registrado como dívida.
  */
 export default defineConfig({
-  fullyParallel: true,
+  // Um worker só. Os testes de `e2e` compartilham o mesmo banco, e a
+  // interferência não é hipotética: a deduplicação por `sha256` é global, então
+  // dois arquivos de teste subindo o mesmo PDF fazem o segundo ser corretamente
+  // recusado como duplicata — o teste falha por causa de uma regra do produto
+  // funcionando. Serializar é mais barato que inventar corpus por arquivo.
+  workers: 1,
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "github" : "list",

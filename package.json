@@ -13,15 +13,22 @@
     "test:watch": "vitest",
     "test:a11y": "playwright test --project=chromium --project=celular",
     "test:e2e": "playwright test --project=e2e",
-    "db:types": "supabase gen types typescript --local > lib/supabase/database.types.ts"
+    "db:types": "supabase gen types typescript --local | sed '/^Connecting to db/d' > lib/supabase/database.types.ts",
+    "worker": "tsx scripts/worker/index.ts",
+    "worker:uma-vez": "tsx scripts/worker/index.ts --uma-vez",
+    "dev:semeia-editora": "tsx scripts/dev/semeia-editora.ts",
+    "probe:aal2": "tsx scripts/probe/aal2-gotrue.ts",
+    "backfill": "tsx scripts/backfill/enviar.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.6",
     "@supabase/supabase-js": "^2.115.0",
     "next": "16.3.4",
+    "pg": "^8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "unpdf": "^1.8.1"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.10.0",
@@ -30,6 +37,7 @@
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6.1.1",
@@ -37,6 +45,7 @@
     "eslint-config-next": "16.3.4",
     "jsdom": "^30.0.1",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5",
     "vitest": "^5.0.0"
   },

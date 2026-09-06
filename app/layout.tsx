@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { IBM_Plex_Sans, Source_Serif_4 } from "next/font/google";
 import "./globals.css";
 
+import { Cabecalho } from "@/components/cabecalho";
+
 // UI e números: sans humanista, institucional, algarismos com `tnum` real.
 // Justificativa completa em docs/design-system.md §Tipografia.
 const fonteUi = IBM_Plex_Sans({
@@ -30,7 +32,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="pt-BR"
       className={`${fonteUi.variable} ${fonteLegal.variable} h-full`}
     >
-      <body className="flex min-h-full flex-col">{children}</body>
+      <body className="flex min-h-full flex-col">
+        <Cabecalho />
+        {children}
+      </body>
     </html>
   );
 }

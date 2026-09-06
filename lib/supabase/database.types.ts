@@ -233,9 +233,11 @@ export type Database = {
           ordem: number
           pagina_fim: number
           pagina_ini: number
+          secao: string | null
           texto: string
           tokens: number | null
           tsv: unknown
+          versao_embedding: number | null
           versao_pipeline: number
         }
         Insert: {
@@ -246,9 +248,11 @@ export type Database = {
           ordem: number
           pagina_fim: number
           pagina_ini: number
+          secao?: string | null
           texto: string
           tokens?: number | null
           tsv?: unknown
+          versao_embedding?: number | null
           versao_pipeline?: number
         }
         Update: {
@@ -259,9 +263,11 @@ export type Database = {
           ordem?: number
           pagina_fim?: number
           pagina_ini?: number
+          secao?: string | null
           texto?: string
           tokens?: number | null
           tsv?: unknown
+          versao_embedding?: number | null
           versao_pipeline?: number
         }
         Relationships: [
@@ -642,6 +648,7 @@ export type Database = {
           documento_id: string
           fonte_texto: string
           id: string
+          motor_texto: string | null
           pagina: number
           rotacao: number | null
           texto: string | null
@@ -657,6 +664,7 @@ export type Database = {
           documento_id: string
           fonte_texto?: string
           id?: string
+          motor_texto?: string | null
           pagina: number
           rotacao?: number | null
           texto?: string | null
@@ -672,6 +680,7 @@ export type Database = {
           documento_id?: string
           fonte_texto?: string
           id?: string
+          motor_texto?: string | null
           pagina?: number
           rotacao?: number | null
           texto?: string | null
@@ -753,7 +762,7 @@ export type Database = {
           paginas: number | null
           publicado_em: string | null
           publicado_por: string | null
-          sha256: string
+          sha256: string | null
           status: Database["public"]["Enums"]["status_documento"]
           storage_bucket: string
           storage_path: string
@@ -777,7 +786,7 @@ export type Database = {
           paginas?: number | null
           publicado_em?: string | null
           publicado_por?: string | null
-          sha256: string
+          sha256?: string | null
           status?: Database["public"]["Enums"]["status_documento"]
           storage_bucket?: string
           storage_path: string
@@ -801,7 +810,7 @@ export type Database = {
           paginas?: number | null
           publicado_em?: string | null
           publicado_por?: string | null
-          sha256?: string
+          sha256?: string | null
           status?: Database["public"]["Enums"]["status_documento"]
           storage_bucket?: string
           storage_path?: string
@@ -1974,6 +1983,20 @@ export type Database = {
       }
     }
     Functions: {
+      buscar_lexica: {
+        Args: { p_consulta: string; p_limite?: number }
+        Returns: {
+          chunk_id: string
+          documento_id: string
+          pagina_fim: number
+          pagina_ini: number
+          rank: number
+          secao: string
+          tipo: string
+          titulo: string
+          trecho: string
+        }[]
+      }
       eh_editor_vigente_linha: {
         Args: {
           p_mandato_fim: string
@@ -1984,6 +2007,10 @@ export type Database = {
         Returns: boolean
       }
       unaccent_imutavel: { Args: { txt: string }; Returns: string }
+      websearch_to_tsquery_pt: {
+        Args: { p_consulta: string }
+        Returns: unknown
+      }
     }
     Enums: {
       fundo: "nenhum" | "reserva" | "obras"

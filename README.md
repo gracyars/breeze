@@ -30,6 +30,12 @@ pnpm dev                 # http://localhost:3000
 | `pnpm test` | Testes unitários (Vitest) |
 | `pnpm test:watch` | Vitest em modo watch |
 | `pnpm db:types` | Gera `lib/supabase/database.types.ts` a partir do schema local |
+| `pnpm test:a11y` | Acessibilidade (Playwright + axe) sobre `/design-system` |
+| `pnpm test:e2e` | Ponta a ponta: entrada, segundo fator e ingestão — **exige `supabase start`** |
+| `pnpm worker` | Worker de ingestão, em laço. `pnpm worker:uma-vez` drena a fila e sai |
+| `pnpm backfill "<arquivo\|pasta>" --tipo <codigo>` | Sobe documento do acervo e enfileira a leitura. **Pede o código do seu autenticador** |
+| `pnpm dev:semeia-editora` | Cria a editora no ambiente local (só contra o Supabase local) |
+| `pnpm probe:aal2` | Sonda D1: confirma que o Auth só emite `aal2` depois do segundo fator |
 
 ## Estrutura
 
@@ -38,11 +44,39 @@ app/              Rotas (App Router)
 components/       Componentes de UI (components/ui = primitivos do design system)
 lib/              Código compartilhado sem UI (lib/supabase = clientes e tipos gerados)
 supabase/         Projeto Supabase local — migrations, testes pgTAP (supabase/tests)
-scripts/          Scripts operacionais (backup.sh) — não é código de aplicação
+scripts/          Scripts operacionais — backup, OCR local, worker, backfill, sondas
 tests/unit/       Testes Vitest
+tests/a11y/       Acessibilidade (Playwright + axe), sem banco
+tests/e2e/        Fluxos completos contra o Supabase local (entrada, MFA, ingestão)
 docs/             Spec, decisões, e docs/ops (runbook, backup)
 .github/workflows Pipeline de CI e backup agendado
 ```
+
+## Ingestão do acervo (F1)
+
+O pipeline tem sete estágios e uma fila no próprio Postgres (`job.fila`, ADR-0025). O caminho de
+um documento:
+
+```bash
+supabase start
+pnpm dev:semeia-editora              # uma vez, no ambiente local
+# entre em /entrar, pegue o link em http://127.0.0.1:54324 e cadastre o 2º fator em /seguranca
+
+pnpm backfill "Documentos do Condomínio/RI - Regulamento Interno - Breeze Bosque da Saúde.pdf" --tipo regimento
+pnpm worker:uma-vez                  # hash/dedupe → extração → OCR se precisar → chunking
+```
+
+**Por que o backfill pede o código do autenticador:** `service_role` não tem `INSERT` em
+`documentos` (decisão de F0). Quem cria documento é uma pessoa com papel `editor`, e `editor` só é
+reconhecido com `aal2`. Uma máquina que publicasse sozinha no acervo seria exatamente o que o
+desenho evita.
+
+**O OCR roda na própria máquina** (`scripts/ocr/vision_ocr.swift`, Apple Vision): nada sai daqui,
+custo zero, nenhum fornecedor a contratar como operador de dado pessoal. Medição e limites em
+`docs/ocr/medicao-vision-convencao.md`; a decisão em `docs/adr/0024-…`.
+
+**Nada é publicado automaticamente.** O pipeline termina em `em_revisao`; publicar é ato humano
+(SPEC §3.5).
 
 ## Ambientes (SPEC §1.2)
 

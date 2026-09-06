@@ -383,6 +383,29 @@ to anon;
 > | `documentos`, `storage.objects` (bucket `documentos`) | `app.documento_visivel(id)` |
 > | `documento_paginas`, `chunks`, `deliberacoes` | `app.pagina_visivel(documento_id, pagina)` |
 
+> **Correção 2026-09-06 (F1 corte C2) — exceção à linha `documentos` da tabela acima.** A policy
+> de SELECT de `documentos` (§6.2) **deixou de chamar `app.documento_visivel(id)`** e passou a
+> avaliar o predicado **inline, local à própria linha**:
+> `app.eh_gestao() or (status = 'publicado' and app.nivel_visivel(visibilidade, id))`.
+> Motivo: `app.documento_visivel` reconsulta `public.documentos` — e uma policy de SELECT sobre
+> `documentos` que reconsulta `documentos` nega `INSERT ... RETURNING` e `UPDATE ... RETURNING`
+> para QUALQUER papel, inclusive editor com `aal2`: sob MVCC, a subconsulta disparada pelo mesmo
+> comando não enxerga a linha que esse comando está inserindo/alterando (cid da linha nova ==
+> cid do comando corrente), então o `exists` dá falso e a policy nega — mesmo a linha sendo,
+> segundos depois, plenamente visível a um `select` num comando novo. É a espécie MODAL do
+> ADR-0023 ("predicado de autorização deve ser local"): a releitura não protegia nada (`status`,
+> `visibilidade` e `id` já estavam na própria linha), só introduzia a não-localidade que quebrou
+> RETURNING. `app.documento_visivel(uuid)` **continua existindo, sem alteração de corpo**, e
+> continua sendo a entrada certa para quem pergunta de FORA de `documentos` — `storage.objects`
+> é o único chamador restante hoje. Alcance de autorização idêntico ao de antes: só a forma
+> mudou. Migração: `supabase/migrations/20260906100500_documentos_select_predicado_local.sql`.
+> Varredura da mesma classe feita nesta correção (comentário completo na migração): nenhuma outra
+> policy do schema tem o mesmo defeito — `documento_paginas`/`chunks` só são escritas por
+> `service_role` (que ignora RLS por completo, então RETURNING nunca passa pela policy);
+> `pessoas`/`papeis` reconsultam a própria tabela dentro de uma função chamada pelo `or`, mas o
+> outro operando do `or` já é local e cobre exatamente o caso em que a escrita afeta a própria
+> linha da sessão — não há caminho onde o resultado observável mude.
+
 ### A INVARIANTE DO PISO (ADR-0019) — sem ela, tudo acima é ilusório
 
 ```
@@ -713,7 +736,12 @@ create table public.documentos (
   storage_bucket text not null default 'documentos',
   storage_path   text not null unique,
   -- Nome do objeto NÃO carrega informação (ADR-0004 item 5): '<uuid>.pdf'.
-  sha256         bytea not null unique check (octet_length(sha256) = 32),  -- dedupe (SPEC §3.1)
+  -- [F1/ADR-0025] NULLABLE desde 2026-09-06: o hash é calculado NO WORKER (ADR-0004, "o cliente
+  -- pode mentir"), e a linha nasce humana (estágio 0) antes de o worker ler o objeto no Storage
+  -- (estágio 1, hash_dedupe). UNIQUE permanece — múltiplos NULL são permitidos; a violação de
+  -- unicidade quando o hash É preenchido é a detecção de duplicata (caso de teste real: par
+  -- #15/#16 do acervo, dois lembretes byte-idênticos da ata AGE de 04.02.2026).
+  sha256         bytea unique check (octet_length(sha256) = 32),  -- dedupe (SPEC §3.1)
   bytes          bigint check (bytes > 0),
   paginas        int check (paginas > 0),
   ocr_aplicado   boolean not null default false,
@@ -791,6 +819,14 @@ comment on table public.documentos is
 --   delete : ninguém (arquivar por status, não apagar; documento é fonte de lançamento)
 ```
 
+> **Correção 2026-09-06:** o `select` de `documentos` acima é o desenho ORIGINAL de F0. Desde
+> `20260906100500_documentos_select_predicado_local.sql`, a policy real não chama mais
+> `app.documento_visivel(id)` — ver a nota de correção logo após a tabela normativa da §4 para o
+> predicado local que a substitui e o porquê (RETURNING/MVCC). `documento_paginas`, `chunks`,
+> `deliberacoes` e `storage.objects` continuam espelhando via `app.pagina_visivel`/
+> `app.documento_visivel` sem nenhuma mudança — a correção é só da policy que a própria
+> `documentos` usa sobre si mesma.
+
 ### 6.3 `documento_unidades` — F1 · **[ADR-0016 item 7]**
 
 ```sql
@@ -829,6 +865,13 @@ create table public.documento_paginas (
                 check (fonte_texto in ('nativo','ocr','misto','vazio')),
   confianca_ocr numeric(4,3) check (confianca_ocr between 0 and 1),  -- não é dinheiro
   rotacao       int check (rotacao in (0,90,180,270)),
+  -- [F1/ADR-0024 §2] Qual MOTOR produziu `texto` — fonte_texto já diz a CLASSE (nativo/ocr/
+  -- misto/vazio); sem o motor, "reprocessar só o que o motor local errou" não é uma consulta.
+  -- NULL antes do estágio 2/3. Valor do tipo (não enum fechado): 'nativo' | 'vision:<versão do
+  -- SO>' (Apple Vision local, motor primário) | 'api:<fornecedor>:<modelo>' (só sob gatilho
+  -- nomeado G1/G2/G3, ADR-0024 §3, por documento).
+  motor_texto   text check (motor_texto is null or motor_texto = 'nativo'
+                             or motor_texto like 'vision:%' or motor_texto like 'api:%'),
   -- [ADR-0018 / D11] Override por página. NULL = herda documentos.visibilidade.
   -- Preenchida = sobrescreve para ESTA página: as páginas do regimento embutido na ata ganham
   -- 'publico' aqui, com a ata em 'autenticado'.
@@ -878,6 +921,18 @@ create table public.chunks (
   -- Coluna gerada: exige to_tsvector de DOIS argumentos com config qualificada (ADR-0005).
   tsv           tsvector generated always as (to_tsvector('public.pt_br', texto)) stored,
   embedding     extensions.vector(1536),
+  -- [F1/ADR-0027] Versão do MODELO de embedding — independente de versao_pipeline, que muda só
+  -- com texto/fronteira de chunk. NULL = sem embedding (estado de todo chunk em F1, etapa
+  -- desligada por falta de chave de LLM). Trocar de modelo bumpa só este campo.
+  versao_embedding smallint,
+  -- [F1/SPEC §4, D17 — "medida ao chunkizar o Regimento real"] Rótulo de seção/capítulo vigente
+  -- onde o chunk começa. NULL quando o documento não tem hierarquia de seção conhecida (ata,
+  -- balancete, edital). Existe porque numeração de artigo NÃO é globalmente única em documento
+  -- real: o Regimento Interno reinicia a numeração a cada capítulo (24 capítulos, 24 "Artigo
+  -- 1º" distintos) — sem capítulo, "Artigo 5º" não identifica nada. O chunker garante que
+  -- nenhum chunk atravessa fronteira de seção (mesma disciplina de fronteira dura já usada para
+  -- visibilidade). Texto livre, é rótulo de citação — não participa de RLS.
+  secao         text,
   versao_pipeline int not null default 1,
   criado_em     timestamptz not null default now(),
   constraint chunks_paginas_ck check (pagina_fim >= pagina_ini),
@@ -1647,13 +1702,29 @@ create table job.fila (
   concluido_em       timestamptz,
   erro               text,
   -- SPEC §3: "job re-executável por sha256 + versão do pipeline"
-  chave_idempotencia text unique,
+  -- [F1/ADR-0025 §2, ADR-0026 §1] `unique` deixou de ser TOTAL em 2026-09-06 — virava no-op
+  -- permanente em `on conflict do nothing` depois que o primeiro job de uma chave concluía,
+  -- fechando a porta para reprocessamento (bug E2). Ver índice parcial abaixo.
+  chave_idempotencia text,
   criado_em          timestamptz not null default now()
 );
 create index fila_pronto_idx on job.fila (prioridade, disponivel_em)
   where status = 'pendente';
 create index fila_travado_idx on job.fila (iniciado_em)
   where status = 'processando';   -- varredura de lease expirado
+
+-- [F1/ADR-0025 §2] Unicidade PARCIAL: impede job pendente/processando duplicado para a mesma
+-- chave (execução simultânea, enfileiramento duplicado por caminhos concorrentes). NÃO impede
+-- reenfileirar a mesma chave depois que o job anterior CONCLUIU — linhas concluídas ficam como
+-- histórico. job.enfileirar() (abaixo) é o único ponto que insere contra este índice.
+create unique index fila_chave_idempotencia_ativa_uk on job.fila (chave_idempotencia)
+  where status in ('pendente', 'processando');
+
+-- [F1/ADR-0025 §Consequências] Índice de job por documento: sustenta "quais jobs pendentes/
+-- processando existem para este documento?" (botão "tentar de novo", sentinela do ADR-0026,
+-- tela de acervo). job.enfileirar() garante que payload sempre carrega 'documento_id'.
+create index fila_documento_idx on job.fila ((payload ->> 'documento_id'))
+  where status in ('pendente', 'processando');
 
 -- Consumo: SELECT ... FOR UPDATE SKIP LOCKED. Sem RLS e sem GRANT para anon/authenticated:
 -- o schema job não é exposto pelo PostgREST e o worker conecta com credencial própria.
@@ -1663,6 +1734,38 @@ comment on table job.fila is
    nenhuma tela precisa dele. Vigilância obrigatória: job "processando" com iniciado_em antigo
    volta a pendente, senão um crash de worker engole o documento em silêncio (ADR-0007).';
 ```
+
+### 11.1 `job.enfileirar` — [F1/ADR-0025 §2, ADR-0026 §1] único caminho de enfileiramento
+
+```sql
+create or replace function job.enfileirar(
+  p_tipo         text,
+  p_documento_id uuid,
+  p_chave        text,
+  p_payload      jsonb,
+  p_prioridade   int default 100
+)
+returns bigint
+language plpgsql security definer set search_path = '' as $$
+  -- valida p_tipo/p_documento_id/p_chave (raise se nulo/vazio);
+  -- v_payload := coalesce(p_payload,'{}') || jsonb_build_object('documento_id', p_documento_id::text);
+  -- insert into job.fila (tipo, payload, chave_idempotencia, prioridade)
+  --   values (p_tipo, v_payload, p_chave, coalesce(p_prioridade,100))
+  --   on conflict (chave_idempotencia) where status in ('pendente','processando') do nothing
+  --   returning id into v_id;
+  -- return v_id;  -- NULL quando já havia job ativo com esta chave
+$$;
+revoke all on function job.enfileirar(text, uuid, text, jsonb, int) from public;
+grant usage on schema job to authenticated;
+grant execute on function job.enfileirar(text, uuid, text, jsonb, int) to authenticated, service_role;
+```
+
+SECURITY DEFINER porque `job.fila` não tem GRANT direto para `authenticated` (schema fora do
+PostgREST). Todo enfileiramento — Server Action de upload, o worker ao concluir um estágio, o
+trigger invalidador de chunks (ADR-0026 caminho 3, corte C4, **ainda não implementado**), ação
+humana de curadoria, comando de reprocessamento, botão "tentar de novo" — passa por esta função.
+`insert` direto em `job.fila` não existe em lugar nenhum: `authenticated` e `anon` não têm GRANT
+na tabela, só EXECUTE na função (testado em `supabase/tests/07_job_enfileirar_idempotencia_parcial.sql`).
 
 ---
 
@@ -1827,6 +1930,10 @@ de autorização (ADR-0012, alternativa descartada).
 ## 15. Matriz consolidada de RLS
 
 `—` = sem policy (negado). Escrita de `editor` sempre exige AAL2 (ADR-0003).
+
+> `documentos` na tabela abaixo é rotulado `documento_visivel` pelo ALCANCE de autorização
+> (mesmo quem vê o quê de sempre); desde 2026-09-06 a policy avalia isso com predicado local
+> em vez de chamar a função — ver a nota de correção da §4/§6.2 (RETURNING/MVCC, ADR-0023).
 
 | Tabela | anon | morador | conselho | editor | escrita |
 |---|---|---|---|---|---|

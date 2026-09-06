@@ -1,3 +1,7 @@
 allowBuilds:
+  # tsx (usado só em script de desenvolvimento: worker, sondas, backfill) traz o
+  # esbuild, que precisa vincular o binário da plataforma no install. Aprovado
+  # deliberadamente; se algum dia sair do projeto, volte para false.
+  esbuild: true
   sharp: false
   unrs-resolver: false

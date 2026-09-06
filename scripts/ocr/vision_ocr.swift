@@ -1,5 +1,8 @@
 // OCR local via Apple Vision. Nada sai da máquina.
-// uso: swift vision_ocr.swift <arquivo.pdf> <dir-saida> [dpi]
+// uso: swift vision_ocr.swift <arquivo.pdf> <dir-saida> [dpi] [pagina...]
+// Sem lista de páginas, roda o documento inteiro. Com, roda só as pedidas — é
+// assim que o estágio 3 do pipeline (ADR-0025) trata UMA página sem reprocessar
+// as outras.
 import Foundation
 import PDFKit
 import Vision
@@ -10,6 +13,7 @@ guard args.count >= 3 else { FileHandle.standardError.write("uso: vision_ocr.swi
 let pdfPath = args[1]
 let outDir = URL(fileURLWithPath: args[2], isDirectory: true)
 let dpi = args.count > 3 ? Double(args[3])! : 300.0
+let paginasPedidas = Set(args.dropFirst(4).compactMap { Int($0) })
 
 guard let doc = PDFDocument(url: URL(fileURLWithPath: pdfPath)) else {
     FileHandle.standardError.write("não abriu o PDF\n".data(using: .utf8)!); exit(1)
@@ -27,6 +31,7 @@ struct Pagina: Codable {
 var resumo: [[String: Any]] = []
 
 for i in 0..<doc.pageCount {
+    if !paginasPedidas.isEmpty && !paginasPedidas.contains(i + 1) { continue }
     guard let page = doc.page(at: i) else { continue }
     let box = page.bounds(for: .mediaBox)
     let scale = dpi / 72.0

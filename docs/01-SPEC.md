@@ -211,6 +211,14 @@ exceção dos triggers citam esse caminho — é onde você vai cair primeiro.
 > e a skill `rag-citacao-juridica-ptbr` precisa do formato antes de a busca citar Convenção. O
 > agravante: o marcador de item é justamente o token que o OCR mais erra (`ii.` chega como `il.`),
 > e é por isso que `lib/ocr/marcadores.ts` existe.
+>
+> **Emenda, mesma data, medida ao chunkizar o Regimento real.** O Regimento **é** articulado, mas
+> **reinicia a numeração de artigo a cada capítulo**: 24 capítulos, 187 linhas de artigo e apenas
+> 25 números distintos — existem 24 "Artigo 1º". Citar "Artigo 5º do Regimento" não identifica
+> nada. A citação exige **capítulo + artigo + página**, e por isso o capítulo viaja com o chunk
+> (`chunks` carrega a seção) e **nenhum chunk atravessa capítulo** — um chunk que começasse no
+> Cap. V e terminasse no Cap. VII citaria, com o rótulo do primeiro, um artigo que existe no
+> segundo e diz outra coisa. Errar assim é pior que não achar.
 
 - **Síntese:** permitida, com trava. Grounding estrito nos chunks recuperados, citação obrigatória por afirmação (documento + página + trecho literal), recusa explícita quando o acervo não responde. **A UI mostra o trecho original como resultado primário e a síntese como secundária** — o inverso do padrão de chatbot. Disclaimer permanente: não é interpretação jurídica.
 
