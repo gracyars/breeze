@@ -120,6 +120,28 @@ export default async function PaginaDeBusca({
                         {referencia(resultado)}
                       </Link>
                     </p>
+
+                    {/*
+                      O mesmo texto costuma estar em dois lugares: a ata que
+                      aprovou o regimento anexa o regimento inteiro. Mostrar as
+                      duas cópias como resultados diferentes faria o morador achar
+                      que são regras diferentes — então o normativo fica, e a
+                      cópia vira esta nota, que é útil numa assembleia.
+                    */}
+                    {resultado.tambemEm.length > 0 && (
+                      <p className="mt-2 text-meta text-tinta-suave">
+                        O mesmo texto aparece também em{" "}
+                        {resultado.tambemEm.map((outro, indice) => (
+                          <span key={outro.documentoId}>
+                            {indice > 0 && ", "}
+                            <Link href={`/acervo/${outro.documentoId}`} className="text-acao">
+                              {outro.titulo}
+                            </Link>
+                          </span>
+                        ))}
+                        .
+                      </p>
+                    )}
                   </CardContent>
                 </Card>
               </li>

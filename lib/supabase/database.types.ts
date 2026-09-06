@@ -1995,6 +1995,7 @@ export type Database = {
           pagina_ini: number
           rank: number
           secao: string
+          texto: string
           tipo: string
           titulo: string
           trecho: string

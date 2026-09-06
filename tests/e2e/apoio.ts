@@ -9,6 +9,17 @@ import { codigoTotp } from "./totp";
  * Apoio dos testes de ponta a ponta: sessão de editora com segundo fator, acesso
  * ao banco e envio de arquivo para o Storage.
  *
+ * **Pré-condição da suíte:** os PDFs que ela usa não podem já estar no acervo.
+ * A deduplicação é por `sha256` e é global — com o acervo real carregado
+ * (`pnpm backfill`), o documento do teste é recusado como duplicata, fica sem
+ * chunk nenhum, e o teste passa a medir um documento vazio em vez de falhar. Se
+ * for rodar a suíte com o acervo carregado, limpe antes:
+ *
+ * ```sql
+ * delete from public.chunks; delete from public.documento_paginas;
+ * delete from job.fila;      delete from public.documentos;
+ * ```
+ *
  * Tudo aqui fala com o stack local **do jeito que a aplicação fala** — Auth pelo
  * GoTrue, dados pelo PostgREST com o JWT da pessoa. O único atalho é o `psql`
  * como superusuário, e só para montar e desmontar fixture: nenhuma verificação

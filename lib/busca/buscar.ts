@@ -1,6 +1,7 @@
 import "server-only";
 
 import { expandeSinonimos, pareceIdentificador, type Sinonimo } from "@/lib/busca/consulta";
+import { deduplica } from "@/lib/busca/deduplica";
 import { clienteDoServidor } from "@/lib/supabase/servidor";
 
 /**
@@ -29,6 +30,14 @@ export interface Resultado {
   /** Trecho literal com os termos marcados — é o resultado primário na tela. */
   trecho: string;
   rank: number;
+  /**
+   * Documentos onde o mesmo conteúdo também aparece (ADR-0028).
+   *
+   * O caso que motiva: a ata que anexou o Regimento inteiro. A regra vale uma
+   * vez, mas está escrita em dois documentos; mostrar as duas cópias como
+   * resultados independentes faz o morador achar que são coisas diferentes.
+   */
+  tambemEm: { documentoId: string; titulo: string }[];
 }
 
 export interface RespostaDaBusca {
@@ -62,7 +71,7 @@ export async function busca(
     p_limite: limite,
   });
 
-  const resultados: Resultado[] = (
+  const brutos = (
     (data ?? []) as {
       chunk_id: string;
       documento_id: string;
@@ -73,6 +82,7 @@ export async function busca(
       secao: string | null;
       trecho: string;
       rank: number;
+      texto: string;
     }[]
   ).map((linha) => ({
     chunkId: linha.chunk_id,
@@ -84,6 +94,22 @@ export async function busca(
     secao: linha.secao,
     trecho: linha.trecho,
     rank: linha.rank,
+    texto: linha.texto,
+  }));
+
+  // Deduplicação acontece AQUI, depois da RLS: é ranking, não autorização
+  // (ADR-0028). Só se funde o que o banco já concordou em devolver a esta pessoa.
+  const resultados: Resultado[] = deduplica(brutos).map(({ resultado, tambemEm }) => ({
+    chunkId: resultado.chunkId,
+    documentoId: resultado.documentoId,
+    titulo: resultado.titulo,
+    tipo: resultado.tipo,
+    paginaIni: resultado.paginaIni,
+    paginaFim: resultado.paginaFim,
+    secao: resultado.secao,
+    trecho: resultado.trecho,
+    rank: resultado.rank,
+    tambemEm,
   }));
 
   return {
