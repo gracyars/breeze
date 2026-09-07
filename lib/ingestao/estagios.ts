@@ -6,6 +6,7 @@ import { chunkiza, type PaginaParaChunk } from "@/lib/ingestao/chunker";
 import { extraiTextoNativo, exigeOcrAutomatico } from "@/lib/ingestao/extracao";
 import { chaveDe, enfileira, ErroPermanente, type Job } from "@/lib/ingestao/fila";
 import { ocrDePaginas } from "@/lib/ingestao/ocr";
+import { redigeDadosPessoais } from "@/lib/ingestao/redacao";
 
 /**
  * Os estágios do pipeline de ingestão (ADR-0025).
@@ -158,7 +159,20 @@ export async function extracaoNativa(ctx: Contexto, job: Job): Promise<void> {
 
   await ctx.db.query("begin");
   try {
+    let cpfRedigidos = 0;
+    let rgRedigidos = 0;
+
     for (const pagina of paginas) {
+      // Redação ANTES de gravar, nas duas colunas. `texto_nativo` também está no
+      // `GRANT SELECT` de `authenticated` — guardar o CPF ali "só para
+      // diagnóstico" o deixaria legível por qualquer morador que enxergue a
+      // página. O PDF original continua íntegro no Storage, atrás de URL
+      // assinada: a prova documental fica, o índice pesquisável de CPF não.
+      const efetivo = redigeDadosPessoais(pagina.texto);
+      const nativo = redigeDadosPessoais(pagina.textoNativo);
+      cpfRedigidos += efetivo.ocorrencias.cpf;
+      rgRedigidos += efetivo.ocorrencias.rg;
+
       await ctx.db.query(
         `insert into public.documento_paginas
            (documento_id, pagina, texto, texto_nativo, fonte_texto, versao_pipeline)
@@ -171,8 +185,8 @@ export async function extracaoNativa(ctx: Contexto, job: Job): Promise<void> {
         [
           documentoId,
           pagina.pagina,
-          pagina.texto,
-          pagina.textoNativo,
+          efetivo.texto,
+          nativo.texto,
           pagina.fonteTexto,
           documento.versao_pipeline,
         ],
@@ -194,6 +208,19 @@ export async function extracaoNativa(ctx: Contexto, job: Job): Promise<void> {
           prioridade: 50,
         });
       }
+    }
+
+    // A contagem vai para a conferência: a editora precisa saber que o documento
+    // trazia identificador em claro, tanto para conferir a máscara quanto para
+    // decidir se aquele documento deveria mesmo ser publicado.
+    if (cpfRedigidos > 0 || rgRedigidos > 0) {
+      await ctx.db.query(
+        `update public.documentos
+            set metadados = metadados || jsonb_build_object(
+                  'redacao', jsonb_build_object('cpf', $2::int, 'rg', $3::int))
+          where id = $1`,
+        [documentoId, cpfRedigidos, rgRedigidos],
+      );
     }
 
     await enfileira(ctx.db, {
@@ -226,18 +253,35 @@ export async function ocrPagina(ctx: Contexto, job: Job): Promise<void> {
     throw new ErroPermanente(`OCR não devolveu a página ${pagina} de ${documentoId}`);
   }
 
+  // A página 18 da Convenção — documento **público** — traz CPF em claro no selo
+  // de cartório, e ela só tem texto porque passou por aqui. Sem esta linha, o
+  // OCR seria a porta de entrada do identificador que a extração nativa nem
+  // chegou a ver.
+  const redigido = redigeDadosPessoais(resultado.texto);
+
   await ctx.db.query("begin");
   try {
     await ctx.db.query(
       `update public.documento_paginas
           set texto = $3, fonte_texto = 'ocr', confianca_ocr = $4
         where documento_id = $1 and pagina = $2`,
-      [documentoId, pagina, resultado.texto, resultado.confianca],
+      [documentoId, pagina, redigido.texto, resultado.confianca],
     );
     await ctx.db.query(
       `update public.documentos set ocr_aplicado = true where id = $1`,
       [documentoId],
     );
+    if (redigido.ocorrencias.cpf > 0 || redigido.ocorrencias.rg > 0) {
+      await ctx.db.query(
+        `update public.documentos
+            set metadados = metadados || jsonb_build_object(
+                  'redacao', jsonb_build_object(
+                    'cpf', coalesce((metadados->'redacao'->>'cpf')::int, 0) + $2::int,
+                    'rg',  coalesce((metadados->'redacao'->>'rg')::int, 0) + $3::int))
+          where id = $1`,
+        [documentoId, redigido.ocorrencias.cpf, redigido.ocorrencias.rg],
+      );
+    }
     // O chunking do documento inteiro é reenfileirado: a página que estava vazia
     // agora tem texto, e o chunk que a ignorava está errado por omissão.
     await enfileira(ctx.db, {
