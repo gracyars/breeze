@@ -9,7 +9,9 @@ unidade, balancetes, contratos — até alguém rodar um UPDATE que não está m
 Vetada a ida a produção de `app.eh_autenticado()` na forma atual (condições C1–C3 abaixo).
 Aprovado o resto do desenho de off-boarding como backlog datado, sem bloqueio de F0.
 
-**Retenção fixada (SPEC §7):** acesso cessa em `vinculos.fim` + 0 dias. PII cadastral do
+**Retenção fixada (SPEC §7):** acesso cessa em `vinculos.fim` + 0 dias — **zero tolerância depois
+do fato**, hoje com resolução de instante (ADR-0030); o que a ponta `fim` significa quando a saída é
+planejada está no parecer `pareceres/2026-09-06-default-da-tela-encerramento-de-vinculo.md`. PII cadastral do
 ex-morador: **5 anos** após `fim` (Lei 4.591/64, art. 22, §1º, "g"), depois anonimização.
 Lançamento, cobrança, ata, deliberação e parecer do período: inalterados (LGPD art. 16, I).
 
@@ -17,9 +19,22 @@ Lançamento, cobrança, ata, deliberação e parecer do período: inalterados (L
 
 ## 1. Quanto tempo o ex-condômino pode acessar o acervo
 
-**Direito dele.** Inspecionar documentos da administração é direito **individual do condômino**
-(CC art. 1.335; STJ, REsp 2.050.372). É direito *da condição*, não da pessoa: extinta a condição,
-extingue-se o direito. Sobrevivem, e não como sessão aberta:
+**Direito dele.** Inspecionar documentos da administração é direito **individual do condômino**.
+É direito *da condição*, não da pessoa: extinta a condição, extingue-se o direito. Sobrevivem, e não
+como sessão aberta:
+
+> **Correção de citação, 2026-09-06 (`juridico-lgpd`, com fonte primária em mãos).** A redação
+> anterior atribuía esse direito ao **CC art. 1.335**. O texto vigente do art. 1.335 traz três
+> incisos — usar/fruir/dispor da unidade, usar as partes comuns, e *votar nas deliberações da
+> assembleia e delas participar, estando quite* — e **nenhum** deles menciona inspeção de documentos.
+> O fundamento textual correto é o **art. 1.348, VIII** (compete ao síndico "prestar contas à
+> assembleia, anualmente e quando exigidas") combinado com o **art. 1.335, III** (participar da
+> assembleia é direito de quem é condômino) e com a **Lei 4.591/64, art. 22, §1º, "g"**. O caráter
+> *individual* — fiscalizar fora da assembleia — é **jurisprudencial**, não textual;
+> `REsp 2.050.372` segue citado e **não foi verificado nesta sessão** (Planalto não publica acórdão
+> do STJ). A conclusão do parecer não muda: o direito continua sendo *da condição*, e o art. 1.335,
+> III o diz com todas as letras.
+
 
 - **Cópia do próprio período**, mediante pedido (LGPD art. 18, II). Atendida pela `editor` por
   export, com registro em `audit.acesso`.
@@ -103,25 +118,28 @@ dado expira sozinho?").
 
 Não bloqueiam F0: `motivo_fim`, alertas, rotina de anonimização, janela degradada (recusada).
 
-## Pendência de verificação — segue `[NÃO CONFIRMADO]`
+## Pendência de verificação — **fechada em 2026-09-06, com ressalva**
 
-Tentei confirmar em fonte primária e **não consegui, por limitação de ferramenta**: esta sessão do
-`juridico-lgpd` não tem `Bash`, logo não roda o `curl` usado para montar a `condominio-legal`
-(WebFetch é bloqueado no Planalto). Também não há texto legal cacheado no repositório —
-`.claude/skills/condominio-legal/` tem apenas o `SKILL.md`. **Não confirmei e não vou parafrasear
-de memória**: citação legal inventada é o pior erro possível neste projeto.
+A sessão original do `juridico-lgpd` não tinha `Bash` e não conseguiu confirmar as duas citações.
+Esta sessão tem, e baixou o Código Civil compilado do Planalto
+(`ccivil_03/leis/2002/l10406compilada.htm`). Resultado:
 
-Para quem retomar, com `Bash` disponível:
-
-| A verificar | Onde | O que checar |
+| A verificar | Situação | Texto vigente |
 |---|---|---|
-| CC art. 1.345 | `planalto.gov.br/ccivil_03/leis/2002/l10406compilada.htm` | Se o texto vigente diz que o adquirente responde pelos débitos do alienante, **inclusive multas e juros moratórios** |
-| CC art. 206, §5º, I | mesma URL | Se a prescrição de 5 anos alcança "dívidas líquidas constantes de instrumento público ou particular", e se isso cobre cota condominial (aqui a ponte é jurisprudencial, não textual — verificar no STJ, não no Planalto) |
+| **CC art. 1.345** | **CONFIRMADO**, literal | "O adquirente de unidade responde pelos débitos do alienante, em relação ao condomínio, **inclusive multas e juros moratórios**." |
+| **CC art. 206, §5º, I** | **CONFIRMADO**, literal | "Em cinco anos: I - a pretensão de cobrança de **dívidas líquidas constantes de instrumento público ou particular**." |
+| **CC art. 1.245** *(verificado de passagem)* | **CONFIRMADO** | "Transfere-se entre vivos a propriedade mediante o **registro do título** translativo no Registro de Imóveis." — sustenta que a venda é fato **datado**, e é o eixo do parecer sobre o default da tela. |
+| **CC art. 1.348, VIII** | **CONFIRMADO** | "Compete ao síndico: [...] VIII - **prestar contas à assembleia, anualmente e quando exigidas**." |
 
-Se confirmarem, remover as marcas deste parecer **e** levar as duas linhas para a
-`condominio-legal` §4 (tabela de prazos de guarda) — sustentam o prazo e vão reaparecer.
-Se não confirmarem, deixar marcado: o veto e o prazo de 5 anos se apoiam em Lei 4.591/64
-art. 22, §1º, "g", CC art. 1.335 e LGPD art. 6º, III e 15, I — todos já verificados.
+**Ressalva que permanece `[NÃO CONFIRMADO]`, e é a que importa:** o texto do art. 206, §5º, I fala em
+*dívida líquida constante de instrumento público ou particular*. Que a **cota condominial** se
+enquadre nessa hipótese é ponte **jurisprudencial**, não textual — não está no Planalto e não foi
+verificada aqui. O prazo de guarda de **5 anos** não depende dela: apoia-se na **Lei 4.591/64,
+art. 22, §1º, "g"**, já verificada. A ponte serve de reforço, não de alicerce; **não citar precedente
+do STJ sem verificar o acórdão.**
+
+Levar as duas linhas confirmadas para a `condominio-legal` §4 (tabela de prazos de guarda) — fora do
+escopo de arquivo deste agente nesta sessão.
 
 ## Checklist acionável
 
@@ -133,4 +151,8 @@ art. 22, §1º, "g", CC art. 1.335 e LGPD art. 6º, III e 15, I — todos já ve
 - [ ] `eng-supabase`: `vinculos.motivo_fim`, `pessoas.anonimizada_em` — F1
 - [ ] `eng-supabase`: dois `tipos_alerta` do item 5.4 — F1
 - [ ] `eng-supabase`: rotina de anonimização + teste com data falsa — F1
-- [ ] *(bloqueado por falta de `Bash`)* confirmar CC art. 1.345 e art. 206, §5º, I — F1
+- [x] confirmar CC art. 1.345 e art. 206, §5º, I — **feito em 2026-09-06**, fonte primária; a
+      ponte "cota condominial = dívida líquida" segue jurisprudencial e não verificada
+- [ ] `arquiteto`: ADR-0030 §3 — trocar a escolha da editora pela derivação por `motivo_fim`
+      (parecer `pareceres/2026-09-06-default-da-tela-encerramento-de-vinculo.md`)
+- [ ] `juridico-lgpd`: levar CC art. 1.345 e 206, §5º, I para `condominio-legal` §4 — F1
