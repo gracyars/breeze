@@ -1258,30 +1258,36 @@ export type Database = {
         Row: {
           concedido_por: string | null
           criado_em: string
+          encerrado_por: string | null
           id: string
           mandato_fim: string | null
           mandato_inicio: string
           motivo: string | null
+          motivo_fim: Database["public"]["Enums"]["motivo_fim_mandato"] | null
           papel: Database["public"]["Enums"]["papel"]
           pessoa_id: string
         }
         Insert: {
           concedido_por?: string | null
           criado_em?: string
+          encerrado_por?: string | null
           id?: string
           mandato_fim?: string | null
           mandato_inicio?: string
           motivo?: string | null
+          motivo_fim?: Database["public"]["Enums"]["motivo_fim_mandato"] | null
           papel: Database["public"]["Enums"]["papel"]
           pessoa_id: string
         }
         Update: {
           concedido_por?: string | null
           criado_em?: string
+          encerrado_por?: string | null
           id?: string
           mandato_fim?: string | null
           mandato_inicio?: string
           motivo?: string | null
+          motivo_fim?: Database["public"]["Enums"]["motivo_fim_mandato"] | null
           papel?: Database["public"]["Enums"]["papel"]
           pessoa_id?: string
         }
@@ -1296,6 +1302,20 @@ export type Database = {
           {
             foreignKeyName: "papeis_concedido_por_fkey"
             columns: ["concedido_por"]
+            isOneToOne: false
+            referencedRelation: "vw_pessoas_mascaradas"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "papeis_encerrado_por_fkey"
+            columns: ["encerrado_por"]
+            isOneToOne: false
+            referencedRelation: "pessoas"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "papeis_encerrado_por_fkey"
+            columns: ["encerrado_por"]
             isOneToOne: false
             referencedRelation: "vw_pessoas_mascaradas"
             referencedColumns: ["id"]
@@ -2018,6 +2038,12 @@ export type Database = {
     }
     Enums: {
       fundo: "nenhum" | "reserva" | "obras"
+      motivo_fim_mandato:
+        | "renuncia"
+        | "substituicao"
+        | "termino_de_mandato"
+        | "erro_cadastral"
+        | "conta_comprometida"
       motivo_fim_vinculo:
         | "venda"
         | "fim_locacao"
@@ -2178,6 +2204,13 @@ export const Constants = {
   public: {
     Enums: {
       fundo: ["nenhum", "reserva", "obras"],
+      motivo_fim_mandato: [
+        "renuncia",
+        "substituicao",
+        "termino_de_mandato",
+        "erro_cadastral",
+        "conta_comprometida",
+      ],
       motivo_fim_vinculo: [
         "venda",
         "fim_locacao",

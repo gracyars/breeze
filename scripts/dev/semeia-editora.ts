@@ -78,8 +78,11 @@ const pessoaId = rows[0].id;
 // numa transação só — senão o banco recusa, com razão.
 await cliente.query("begin");
 await cliente.query(
+  // `now()`, não `current_date`: a vigência é intervalo de instantes desde o
+  // ADR-0030, e `current_date` gravaria a meia-noite de hoje — antedatando o
+  // início do mandato em até 24 h no registro que a trilha vai mostrar.
   `insert into public.papeis (pessoa_id, papel, mandato_inicio, motivo)
-   values ($1, 'editor', current_date, $2)
+   values ($1, 'editor', now(), $2)
    on conflict do nothing`,
   [pessoaId, `semeadura de desenvolvimento ${randomUUID().slice(0, 8)}`],
 );

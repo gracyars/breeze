@@ -64,6 +64,14 @@ Corolários que valem para qualquer coluna futura da mesma família:
 - `date` em predicado de autorização é sinal de alerta, do mesmo naipe que `exists` do ADR-0023.
 - Intervalo **fechado** em predicado de autorização é sempre errado: torna "cessar agora"
   inexprimível e força a mentir em uma das duas pontas.
+- **Referencial não declarado é da mesma família que resolução errada.** `date` num predicado
+  deixa a **resolução** implícita; `::timestamptz` numa conversão deixa o **fuso** implícito, herdado
+  do `TimeZone` de quem por acaso rodou o comando. Os dois produzem uma janela de autorização
+  diferente da pretendida — em horas ou em dias — **sem erro e sem aviso**, para o lado que o
+  ambiente escolher. Regra: toda fronteira de vigência — o tipo da coluna, a expressão que a
+  converte, a expressão que a tela grava — **nomeia seu referencial no texto**, nunca o herda da
+  sessão. Isto vale tanto para `at time zone 'America/Sao_Paulo'` no passo 3 quanto na tela (§3);
+  se é inaceitável num, é inaceitável no outro, e pelo mesmo motivo.
 - `now()` (= `transaction_timestamp()`), **nunca** `clock_timestamp()`: os helpers de RLS são
   `STABLE` e precisam continuar sendo, senão o plano reavalia por linha e o predicado pode mudar de
   valor no meio de uma mesma consulta.
@@ -152,10 +160,12 @@ porque a espécie do fato já determina a granularidade honesta:
   técnico de autorização: vive no banco e na trilha, não na tela. **Fronteira a não confundir:** a
   restrição é sobre a exibição do *dado de domínio*; se F1 construir uma tela de leitura de
   `audit.log`, o instante aparece lá por definição — é o que uma trilha é.
-- **O fuso é explícito no ponto da tradução** (`(D::date + 1) at time zone 'America/Sao_Paulo'`),
-  nunca o fuso implícito do servidor. Isso resolve o item **F4 da INV-02** ("vigência usa
-  `current_date` no fuso do servidor", hoje `ACEITO`): com `now()` a comparação é absoluta, e a
-  ambiguidade de fuso sai do predicado e passa a viver só aqui, declarada.
+- **O fuso é explícito no ponto da tradução** (`(D::date + 1)::timestamp at time zone
+  'America/Sao_Paulo'`), nunca o fuso implícito do servidor — **a mesma exigência, pela mesma razão,
+  vale para a conversão das linhas existentes no passo 3 da especificação**, e é o corolário 3 do
+  §1 que amarra as duas. Isso resolve o item **F4 da INV-02** ("vigência usa `current_date` no fuso
+  do servidor", hoje `ACEITO`): com `now()` a comparação é absoluta, e a ambiguidade de fuso sai do
+  predicado e passa a viver só em dois lugares nomeados — esta expressão e a do passo 3.
 
 #### Onde eu discordo do parecer, e onde não
 
@@ -308,20 +318,42 @@ Ordem por coluna: `drop default` → `alter type ... using` → `set default`.
 -- papeis
 alter table public.papeis alter column mandato_inicio drop default;
 alter table public.papeis alter column mandato_inicio type timestamptz
-  using mandato_inicio::timestamptz;                       -- meia-noite do próprio dia
+  using mandato_inicio::timestamp at time zone 'America/Sao_Paulo';    -- meia-noite do próprio dia
 alter table public.papeis alter column mandato_inicio set default now();
 
 alter table public.papeis alter column mandato_fim type timestamptz
-  using (mandato_fim + 1)::timestamptz;                    -- meia-noite do dia SEGUINTE
+  using (mandato_fim + 1)::timestamp at time zone 'America/Sao_Paulo'; -- meia-noite do dia SEGUINTE
 
 -- vinculos: idêntico, em inicio e fim
 ```
 
-**`(fim + 1)` e não `fim::timestamptz`.** O intervalo antigo era fechado: `fim = 2026-09-06`
+Duas coisas nessa expressão, e as duas erram em silêncio se saírem:
+
+**(a) `(fim + 1)` e não `fim` puro.** O intervalo antigo era fechado: `fim = 2026-09-06`
 significava "vigente até o fim do dia 06". O equivalente meia-aberto é `2026-09-07 00:00`. Converter
-para `2026-09-06 00:00` **revogaria retroativamente um dia inteiro de todo mundo** — e, pior,
-reescreveria o passado registrado, que é a única coisa que este ADR se compromete a não fazer.
-`inicio` converte direto: a ponta inicial já era inclusiva nas duas semânticas.
+para `2026-09-06 00:00` **revogaria retroativamente um dia inteiro de todo mundo**. `inicio`
+converte sem `+ 1`: a ponta inicial já era inclusiva nas duas semânticas, e a assimetria é
+proposital.
+
+**(b) `::timestamp at time zone 'America/Sao_Paulo'`, e não `::timestamptz`.**
+*(Corrigido em 2026-09-06 — ver `docs/auditoria/veredito-20260906160000-vigencia-em-instante.md`,
+ressalva 2. A versão anterior deste passo prescrevia o cast implícito, contrariando o §3 do próprio
+ADR.)* `::timestamptz` sobre um `date` resolve o fuso pelo `TimeZone` **da sessão que roda a
+migração**. Rodar num banco em UTC para uma aplicação em `America/Sao_Paulo` **estreita três horas
+em cada linha existente** — sem erro, sem aviso, só linhas expirando três horas antes do que
+deveriam. É o mesmo estreitamento retroativo do item (a), em outra escala, entrando pela única porta
+que o ADR tinha deixado destrancada. Impacto **hoje é zero e foi medido** (stack local em
+`TimeZone = UTC` de ponta a ponta, sem projeto hospedado — dívida `D2`); o custo é integral no dia
+em que houver dado real, e é a única vez que essa migração roda.
+
+O `::timestamp` intermediário **não é decorativo**: `date` converte implicitamente tanto para
+`timestamp` quanto para `timestamptz`, e `date at time zone 'x'` é ambíguo para o resolvedor de
+operadores. Fixar `::timestamp` primeiro é o que torna a expressão determinística.
+
+O fuso nomeado vive **na expressão**, não num `set timezone` no topo do arquivo: o objetivo é que o
+referencial esteja escrito onde a conversão acontece, e não em estado de sessão que a próxima pessoa
+não vê ao ler a linha. Se o produto um dia deixar de ser um condomínio em um só fuso, esta literal é
+um dos pontos a revisar — junto do item F4 da INV-02.
 
 Sanidade a rodar **na mesma transação**, antes do commit — se qualquer uma falhar, `raise`:
 
@@ -526,13 +558,25 @@ registro do título, fato que tem data e não hora conhecida do condomínio). O 
 banco:** tipo, predicado, enum, constraints e a especificação de migração acima seguem válidos e
 intocados — a emenda é toda de tela.
 
-**Registro de método, porque o erro é reutilizável.** A versão recusada do §3 contradizia o §6 do
-próprio documento, e quem achou foi o revisor jurídico, não o autor. A lição não é "consultar mais":
-é que **uma promessa de invariante feita numa seção precisa ser conferida contra todas as entradas
-que outra seção autoriza**. O §6 prometia zero sobreposição de editoras; o §3 dava à editora um
-botão para criá-la. É a mesma classe do V1-R/V3-R/V10-R — predicado validado no caminho enumerado e
-não no estado resultante —, desta vez entre **parágrafos** de um ADR em vez de entre colunas ou
-tabelas.
+**Implementado e auditado.** Migração `20260906160000_vigencia_em_instante.sql` (`eng-supabase`);
+veredito **APROVADO** em `docs/auditoria/veredito-20260906160000-vigencia-em-instante.md`, suíte
+298 → **320/320, zero `todo`**, com teste de mutação que fica vermelho quando o intervalo volta a
+ser fechado, quando a sobrecarga `date` ressuscita e quando a conversão perde o `+ 1`. Os dois
+`todo` do bloco G viraram a matriz de revogação de 16 asserts que este ADR pediu por nome.
+
+**Registro de método, porque o erro é reutilizável — e aconteceu duas vezes neste documento.**
+
+1. A versão recusada do §3 contradizia o **§6** do próprio ADR: o §6 prometia zero sobreposição de
+   editoras, o §3 dava à editora um botão para criá-la. Achou o revisor jurídico.
+2. O passo 3 da especificação contradizia o **§3**: o §3 exige fuso explícito e argumenta por quê,
+   o passo 3 prescrevia o cast implícito. Achou o `auditor-rls`, auditando a migração.
+
+Nos dois casos o autor enunciou o princípio numa seção e o violou em outra, e nos dois casos quem
+achou foi quem leu o documento **de fora**, procurando outra coisa. A lição não é "revisar mais": é
+que **princípio declarado numa seção vira obrigação de conferência contra todas as demais** — a
+mesma classe do V1-R/V3-R/V10-R (regra validada no caminho enumerado, não no estado resultante),
+desta vez entre **parágrafos de um ADR** em vez de entre colunas ou tabelas. Um ADR longo o
+bastante para ter especificação embutida tem superfície interna, e superfície interna vaza igual.
 
 **Pendente de aprovação do orquestrador (não editado por este agente):** SPEC §2, tabela de
 `papeis`/`vinculos` — tipo das quatro colunas e as duas colunas novas de `papeis`; e SPEC §2.1,

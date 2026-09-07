@@ -118,8 +118,12 @@ export async function editoraComSegundoFator(prefixo: string): Promise<Editora> 
      values ('${usuario.id}', 'Editora de Teste', '${email}') returning id`,
   );
   await sql(
+    // `now()`, não `current_date`: desde o ADR-0030 a vigência é intervalo de
+    // instantes, e `current_date` antedataria o início do mandato em até 24 h —
+    // fixture que não carrega a forma real do dado mede um caso mais frouxo que
+    // o de produção.
     `insert into public.papeis (pessoa_id, papel, mandato_inicio)
-     values ('${pessoaId}', 'editor', current_date)`,
+     values ('${pessoaId}', 'editor', now())`,
   );
 
   const link = (await auth("/admin/generate_link", { type: "magiclink", email })) as {

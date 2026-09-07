@@ -211,7 +211,10 @@ returns uuid language sql stable security definer set search_path = '' as $$
 $$;
 
 -- PRIMITIVA de RLS. Papel vale se: mandato vigente E, para editor/conselho, sessão em AAL2.
--- Papel é DADO (tabela papeis), não claim do JWT: mandato que termina hoje deixa de valer hoje.
+-- Papel é DADO (tabela papeis), não claim do JWT. [ADR-0030, 2026-09-06] Vigência é intervalo
+-- MEIA-ABERTO em instante — `[mandato_inicio, mandato_fim)`, avaliado em `now()`, nunca
+-- `current_date`/`>=`: mandato encerrado AGORA deixa de valer AGORA, não no dia seguinte.
+-- `mandato_inicio`/`mandato_fim` são `timestamptz` (eram `date` até a migração do ADR-0030).
 create or replace function app.tem_papel(p public.papel)
 returns boolean language sql stable security definer set search_path = '' as $$
   select exists (
@@ -221,8 +224,8 @@ returns boolean language sql stable security definer set search_path = '' as $$
      where pe.auth_user_id = auth.uid()
        and pe.ativa
        and pa.papel = p
-       and pa.mandato_inicio <= current_date
-       and (pa.mandato_fim is null or pa.mandato_fim >= current_date)
+       and pa.mandato_inicio <= now()
+       and (pa.mandato_fim is null or pa.mandato_fim > now())
        -- TOTP obrigatório para papel privilegiado (ADR-0003 item 5):
        and ( p = 'morador'
              or coalesce(auth.jwt() ->> 'aal', 'aal1') = 'aal2' )
@@ -248,14 +251,15 @@ returns public.papel language sql stable as $$
          end
 $$;
 
--- Unidades da pessoa logada, por vínculo vigente.
+-- Unidades da pessoa logada, por vínculo vigente. [ADR-0030] `inicio`/`fim` timestamptz,
+-- intervalo meia-aberto `[inicio, fim)` avaliado em `now()`.
 create or replace function app.unidades_da_pessoa()
 returns setof uuid language sql stable security definer set search_path = '' as $$
   select v.unidade_id
     from public.vinculos v
    where v.pessoa_id = app.pessoa_atual()
-     and v.inicio <= current_date
-     and (v.fim is null or v.fim >= current_date)
+     and v.inicio <= now()
+     and (v.fim is null or v.fim > now())
 $$;
 
 -- ****************************************************************************
@@ -563,7 +567,7 @@ comment on table public.pessoas is
 -- cpf_ultimos_digitos. Uma policy não consegue esconder coluna.
 ```
 
-### 5.3 `vinculos` — F0
+### 5.3 `vinculos` — F0, colunas de vigência migradas para instante pelo ADR-0030 (2026-09-06)
 
 ```sql
 create table public.vinculos (
@@ -571,11 +575,16 @@ create table public.vinculos (
   unidade_id  uuid not null references public.unidades(id) on delete restrict,
   pessoa_id   uuid not null references public.pessoas(id) on delete restrict,
   tipo        public.tipo_vinculo not null,
-  inicio      date not null default current_date,
-  fim         date,
+  -- [ADR-0030] timestamptz, não date: vigência é intervalo MEIA-ABERTO em instante
+  -- `[inicio, fim)`, avaliado em now() — "cessar agora" é `fim = now()`, aceito e efetivo no
+  -- mesmo instante. `fim = inicio` é intervalo vazio e legítimo (concessão desfeita sem efeito).
+  inicio      timestamptz not null default now(),
+  fim         timestamptz,
+  motivo_fim  public.motivo_fim_vinculo,
   criado_em   timestamptz not null default now(),
   criado_por  uuid references public.pessoas(id),
-  constraint vinculos_periodo_ck check (fim is null or fim >= inicio)
+  constraint vinculos_periodo_ck check (fim is null or fim >= inicio),
+  constraint vinculos_motivo_fim_ck check (motivo_fim is null or fim is not null)
 );
 create index vinculos_unidade_fim_idx on public.vinculos (unidade_id, fim);
 create index vinculos_pessoa_vigente_idx on public.vinculos (pessoa_id) where fim is null;
@@ -583,7 +592,10 @@ create unique index vinculos_vigente_uk on public.vinculos (unidade_id, pessoa_i
   where fim is null;
 -- Alternativa mais forte, se aparecer sobreposição histórica indevida (exige btree_gist):
 --   exclude using gist (unidade_id with =, pessoa_id with =, tipo with =,
---                       daterange(inicio, fim, '[]') with &&)
+--                       tstzrange(inicio, fim, '[)') with &&)
+-- ^ descartada por ora no ADR-0030 (custo desproporcional: troca todos os índices btree por
+--   GiST); registrada como evolução natural se um dia for preciso proibir sobreposição por
+--   constraint em vez de UNIQUE parcial.
 
 comment on table public.vinculos is
   'RLS: pessoa vê os vínculos das PRÓPRIAS unidades; gestão vê todos; escrita só editor.
@@ -597,19 +609,27 @@ comment on table public.vinculos is
 --   insert/update/delete : app.eh_editor()
 ```
 
-### 5.4 `papeis` — F0
+### 5.4 `papeis` — F0, colunas de vigência migradas para instante pelo ADR-0030 (2026-09-06)
 
 ```sql
 create table public.papeis (
   id             uuid primary key default gen_random_uuid(),
   pessoa_id      uuid not null references public.pessoas(id) on delete cascade,
   papel          public.papel not null,
-  mandato_inicio date not null default current_date,
-  mandato_fim    date,
+  -- [ADR-0030] timestamptz, não date — mesma semântica meia-aberta de vinculos.inicio/fim.
+  mandato_inicio timestamptz not null default now(),
+  mandato_fim    timestamptz,
   concedido_por  uuid references public.pessoas(id),
   motivo         text,
+  -- [ADR-0030 §5] simetria com vinculos.motivo_fim: quem encerrou e por quê. motivo_fim é enum
+  -- fechado (não texto livre) porque papeis.motivo está fora de audit.colunas_liberadas e um
+  -- campo textual sairia [REDIGIDO] na trilha, justo o campo que existe para ser lido nela.
+  encerrado_por  uuid references public.pessoas(id),
+  motivo_fim     public.motivo_fim_mandato,
   criado_em      timestamptz not null default now(),
-  constraint papeis_mandato_ck check (mandato_fim is null or mandato_fim >= mandato_inicio)
+  constraint papeis_mandato_ck check (mandato_fim is null or mandato_fim >= mandato_inicio),
+  constraint papeis_encerramento_ck
+    check ((encerrado_por is null and motivo_fim is null) or mandato_fim is not null)
 );
 create index papeis_pessoa_fim_idx on public.papeis (pessoa_id, mandato_fim);
 create unique index papeis_vigente_uk on public.papeis (pessoa_id, papel) where mandato_fim is null;
