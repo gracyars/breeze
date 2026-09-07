@@ -50,8 +50,8 @@ não podem divergir.
 |---|---|---|---|
 | `unidades` | bloco, `numero text` (existe "101-A", "Cob 02"), ordem, fracao_ideal, area_m2 | `unique(bloco,numero)` | leitura: autenticados; escrita `editor` |
 | `pessoas` | auth_user_id, nome, email, `cpf_hash` (HMAC determinístico, para lookup), `cpf_enc` (reversível), `cpf_ultimos_digitos`, telefone | `unique(cpf_hash)` | própria linha; `conselho` lê todas com CPF mascarado; CPF em claro só para `editor`, **decifrado em rotina de servidor** e registrado em `audit.acesso` — `cpf_enc` sem `SELECT` para `authenticated` |
-| `vinculos` | unidade_id, pessoa_id, tipo, inicio, fim | `(unidade_id, fim)` | própria unidade; conselho tudo |
-| `papeis` | pessoa_id, papel, mandato_inicio, mandato_fim, concedido_por | `(pessoa_id, mandato_fim)`, `(papel, mandato_inicio, mandato_fim)` | leitura: próprios papéis, gestão vê todos; **escrita só `editor` com AAL2** |
+| `vinculos` | unidade_id, pessoa_id, tipo, `inicio`/`fim` **`timestamptz`** (ADR-0030) | `(unidade_id, fim)` | própria unidade; conselho tudo |
+| `papeis` | pessoa_id, papel, `mandato_inicio`/`mandato_fim` **`timestamptz`** (ADR-0030), concedido_por, revogado_por, motivo_fim | `(pessoa_id, mandato_fim)`, `(papel, mandato_inicio, mandato_fim)` | leitura: próprios papéis, gestão vê todos; **escrita só `editor` com AAL2** |
 | `tipos_documento` | codigo, nome, visibilidade_padrao, `permite_publico`, retencao_meses | pk textual | leitura livre; escrita `editor`. Tabela de domínio: taxonomia cresce sem deploy |
 | `documentos` | tipo, titulo, data_documento, competencia, storage_path, `sha256 unique`, paginas, ocr_aplicado, status, **visibilidade**, **tem_paginas_mistas**, versao_pipeline | `(tipo, data_documento)`, `(visibilidade, status)` | por `visibilidade`: público / autenticado / conselho / restrito — arquivo inteiro via `app.documento_visivel()` |
 | `documento_unidades` | documento_id, unidade_id | pk composta | leitura: própria unidade + gestão. **Sem ela, `visibilidade='restrito'` não é avaliável** |
@@ -162,8 +162,18 @@ verificadores. Ver ADR-0014.
 **Nível de garantia entra na autorização, não só na tela.** TOTP obrigatório para `editor` e
 `conselho` significa que o helper de RLS só reconhece esses papéis quando o JWT traz `aal2`;
 sessão de membro do conselho em AAL1 é tratada como `morador`. E **papel é dado, não claim**:
-vive em `papeis` com mandato datado, não em `app_metadata` — mandato que termina hoje deixa de
-valer hoje, sem esperar a expiração do token. Ver ADR-0003 e ADR-0012.
+vive em `papeis` com mandato datado, não em `app_metadata` — **mandato encerrado agora deixa de
+valer agora**, sem esperar a expiração do token. Ver ADR-0003, ADR-0012 e ADR-0030.
+
+> **Correção, 2026-09-06 (ADR-0030).** Esta frase dizia "mandato que termina hoje deixa de valer
+> hoje" e descrevia um comportamento que o sistema **não tinha**. Medido: com `mandato_fim` do tipo
+> `date` e intervalo fechado, `fim = hoje` continua vigente o dia inteiro e `fim = ontem` viola o
+> check quando o mandato começou hoje — ou seja, revogar hoje um mandato aberto hoje era
+> impossível, e quem assumisse por engano ficaria com toda a escrita do sistema até o dia seguinte.
+> A vigência passa a ser intervalo **meia-aberto de instantes** (`[inicio, fim)`, avaliado em
+> `now()`), o que torna `fim = now()` ao mesmo tempo aceito e efetivo. Vale igualmente para
+> `vinculos.inicio/fim` — o mesmo defeito atingia todo morador que vendesse a unidade hoje, não só
+> a editora.
 
 ---
 

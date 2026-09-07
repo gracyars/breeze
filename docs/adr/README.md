@@ -42,12 +42,15 @@ Formato fixo: **Contexto / Decisão / Consequências / Alternativas descartadas 
 | [0027](0027-busca-lexica-primeiro-etapas-de-llm-desligadas.md) | Busca léxica em F1; embedding e classificação atrás de porta, **desligados e declarados** | Aceito — corrige o registro de dimensão do 0005 |
 | [0028](0028-anexo-replicado-fonte-canonica-e-dedupe-na-busca.md) | Anexo replicado: curadoria declara, busca deduplica, **norma é citada pelo documento normativo** | Aceito — adendo ao 0018/0019; fecha A2 |
 | [0029](0029-auth-antes-do-backfill-e-o-desenho-da-conferencia.md) | **Auth é o primeiro corte de F1**; backfill é máquina para ingerir, humano para publicar | Aceito — propõe correção ao SPEC §9; fecha D1 |
+| [0030](0030-vigencia-em-instante-intervalo-meia-aberto.md) | **Vigência é intervalo meia-aberto em instante** (`[inicio, fim)` em `now()`), não período em dias | Aceito — estende 0012 §5 e 0023; **fecha R4**; propõe correção ao SPEC §2/§2.1. **§3 emendado pelo parecer `juridico-lgpd` de 2026-09-06** (a ponta final deriva de `motivo_fim`; não é escolha da editora) |
 
 **Antes de escrever trigger de invariante entre duas tabelas:** ADR-0021 — e preencha o formulário
 em [`../invariantes/`](../invariantes/README.md), que é o artefato com gate de CI.
 **Antes de escrever função chamada por policy:** ADR-0023. `exists`/`count`/`min` sobre outras
 linhas é sinal de alerta.
 **Antes de denormalizar qualquer dado pessoal:** ADR-0020.
+**Antes de escolher o tipo de uma coluna que entra em predicado de autorização:** ADR-0030 — `date`
+é sinal de alerta, e intervalo **fechado** é sempre errado: torna "cessar agora" inexprimível.
 **Antes de apagar dado derivado (chunk, embedding, índice):** ADR-0026 — quem invalida, enfileira,
 na mesma transação. `DELETE` que aposta em reprocessamento futuro é falha silenciosa.
 **Antes de escrever qualquer etapa de pipeline:** ADR-0025 (fronteira transacional e idempotência)
