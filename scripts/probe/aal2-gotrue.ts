@@ -21,6 +21,11 @@
 import { createHmac, randomUUID } from "node:crypto";
 
 const URL_AUTH = `${process.env.SUPABASE_URL ?? "http://127.0.0.1:54321"}/auth/v1`;
+// Esta chave não é segredo e não vaza nada: é a chave `anon` de demonstração que
+// vem embutida em TODO stack local do Supabase (`iss: supabase-demo`), idêntica na
+// máquina de qualquer pessoa, e só serve contra `127.0.0.1:54321`. Está aqui para
+// a sonda rodar sem configuração. Scanner de segredo vai apontá-la; é falso
+// positivo. Contra qualquer projeto hospedado, passe `SUPABASE_ANON_KEY`.
 const CHAVE_ANON =
   process.env.SUPABASE_ANON_KEY ??
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0";
