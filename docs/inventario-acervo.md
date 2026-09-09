@@ -4,8 +4,19 @@ Sondagem de metadados dos 43 PDFs em `Documentos do Condomínio/` (extração de
 `pypdf`, sem cópia de conteúdo). Nativo/escaneado/misto pela heurística da skill
 `ocr-documento-fiscal-br` (qualidade do texto extraído, não só presença de camada); tipo
 documental pela taxonomia de `condominio-documentos`. Nenhum trecho com nome, CPF ou valor
-individual foi reproduzido — os nomes de pessoa na tabela vêm do próprio nome de arquivo
-(carta de apresentação/renúncia de síndico), metadado já público no condomínio.
+individual foi reproduzido.
+
+**Nome de pessoa natural é redigido aqui, e a regra vale para o repositório inteiro.** A tabela
+trazia dois nomes próprios vindos do nome de arquivo (carta de renúncia de síndico, carta de
+apresentação da gestão) sob o argumento de serem "metadado já público no condomínio". O
+argumento caiu quando o repositório virou público em 2026-09-08: público no hall de um prédio
+específico e público na internet aberta e indexável não são a mesma exposição, e a segunda não
+se desfaz. Os nomes viraram `[NOME]`/`[NOMES]` no HEAD **e em todo o histórico**
+(`git filter-repo --replace-text`) — redigir só o arquivo atual seria teatro, porque `git log -p`
+mostra o resto.
+
+Ao acrescentar linha nesta tabela: **o nome do arquivo entra sem o nome da pessoa.** Razão
+social de fornecedor pode ficar — pessoa jurídica não é titular de dado pessoal (LGPD art. 5º, I).
 
 **Nota metodológica:** o limiar automático de densidade de palavra sinalizou 6 documentos como
 "MISTO". Inspeção manual página a página (`repl_ratio` = 0 em todas) mostrou que nenhum é OCR
