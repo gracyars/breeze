@@ -16,8 +16,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PNPM_VERSION: 11
-  NODE_VERSION: 20
+  # A versão do pnpm NÃO se declara aqui. `pnpm/action-setup@v4` recusa rodar quando encontra
+  # duas fontes de verdade (`with: version:` no workflow E `packageManager` no package.json) —
+  # foi exatamente isso que deixou a `main` vermelha no primeiro push ao GitHub, com o job de
+  # lint morrendo antes de instalar qualquer coisa e todos os seguintes em `skipped`. A fonte
+  # única é `package.json` → `"packageManager"`, que é também o que o `corepack` local respeita.
+  # Node alinhado com a máquina onde a suíte foi provada (v24) — CI num Node diferente do de
+  # desenvolvimento é um buraco no que o CI prova.
+  NODE_VERSION: 24
 
 jobs:
   lint:
@@ -26,8 +32,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -42,8 +46,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -58,8 +60,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -71,11 +71,22 @@ jobs:
     name: Testes de acessibilidade (Playwright + axe)
     runs-on: ubuntu-latest
     needs: unit-test
+    # Os testes de a11y não tocam banco (ver playwright.config.ts), mas o app não sobe sem
+    # estas duas variáveis: `proxy.ts` constrói um cliente Supabase em TODA requisição para
+    # renovar a sessão, e `createServerClient` lança "Your project's URL and Key are required"
+    # quando elas faltam — /design-system vira 500 antes de renderizar qualquer coisa. Medido
+    # nesta máquina: com as variáveis abaixo, 200; sem elas, 500.
+    #
+    # Os valores são falsos e a porta é inalcançável de propósito. `getUser()` falha a
+    # requisição de rede e devolve usuário nulo, que é exatamente o estado que a página
+    # pública espera. Se um teste de a11y um dia precisar de banco de verdade, ele quebra
+    # aqui — em vez de passar por acidente apontando para dado real.
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:59999
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: chave-falsa-sem-banco-atras
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -169,7 +180,52 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+      # ---------------------------------------------------------------------------------
+      # Ainda NÃO existe projeto Supabase hospedado (dívida D2; a criação é o item A1 do
+      # Portão A em docs/juridico/pareceres/2026-09-07-producao-dado-real-supabase-vercel.md,
+      # e é ação da dona do projeto, não deste workflow). Sem os secrets, `link` falharia com
+      # project-ref vazio e deixaria a `main` permanentemente vermelha por um motivo que não é
+      # defeito de código — ruído que treina todo mundo a ignorar o X.
+      #
+      # Este passo é o oposto de um `continue-on-error` silencioso: ele DIZ, no log e no
+      # sumário do run, que o deploy não aconteceu e por quê. E não afrouxa nada do que
+      # importa: `db-push` nunca fez parte de `ci-gate` (o required status check) — a cadeia
+      # lint→typecheck→unit→a11y→rls continua barrando merge com a mesma dureza.
+      #
+      # No dia em que os três secrets existirem, este passo passa a ser um no-op e o deploy
+      # roda sozinho. Não há flag para lembrar de virar.
+      # ---------------------------------------------------------------------------------
+      - name: Verificar se o projeto remoto já existe
+        id: pre
+        env:
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          faltando=()
+          [ -n "${SUPABASE_PROJECT_ID:-}" ]    || faltando+=("SUPABASE_PROJECT_ID")
+          [ -n "${SUPABASE_ACCESS_TOKEN:-}" ]  || faltando+=("SUPABASE_ACCESS_TOKEN")
+          [ -n "${SUPABASE_DB_PASSWORD:-}" ]   || faltando+=("SUPABASE_DB_PASSWORD")
+          if [ "${#faltando[@]}" -eq 0 ]; then
+            echo "tem_remoto=true" >> "$GITHUB_OUTPUT"
+            echo "Secrets presentes — migrações serão aplicadas no projeto remoto."
+          else
+            echo "tem_remoto=false" >> "$GITHUB_OUTPUT"
+            printf 'Secrets ausentes: %s\n' "${faltando[*]}"
+            echo "::warning title=Deploy de schema NÃO executado::Não há projeto Supabase hospedado (dívida D2 / Portão A, item A1). As migrações desta push NÃO foram aplicadas em lugar nenhum além do CI local. Secrets ausentes: ${faltando[*]}"
+            {
+              echo "### Deploy de schema não executado"
+              echo
+              echo "Não há projeto Supabase hospedado. Migrações desta push ficaram apenas no repositório."
+              echo
+              echo "Secrets ausentes: \`${faltando[*]}\`"
+              echo
+              echo "Fecha com o item **A1** do Portão A — \`docs/juridico/pareceres/2026-09-07-producao-dado-real-supabase-vercel.md\` — e a dívida **D2** de \`docs/ops/divida-tecnica.md\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: supabase/setup-cli@v1
+        if: steps.pre.outputs.tem_remoto == 'true'
         with:
           version: latest
       # Filtro obrigatório antes de qualquer push remoto. `20260904122300_pgtap_test_only.sql`
@@ -183,6 +239,7 @@ jobs:
       # para um workdir temporário, e aponta `supabase --workdir` para ele em todos os passos
       # seguintes — o diretório `supabase/migrations` do checkout original nunca é tocado.
       - name: Filtrar migrações de teste (*_test_only.sql) antes do deploy
+        if: steps.pre.outputs.tem_remoto == 'true'
         run: |
           set -euo pipefail
           DEPLOY_ROOT="$(mktemp -d)"
@@ -211,11 +268,13 @@ jobs:
       # relatório de entrega do devops): SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD,
       # SUPABASE_PROJECT_ID. Schema nunca é editado pelo dashboard — só migração versionada.
       - name: Link ao projeto remoto
+        if: steps.pre.outputs.tem_remoto == 'true'
         run: supabase --workdir "$DEPLOY_WORKDIR" link --project-ref "$SUPABASE_PROJECT_ID"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
       - name: Aplicar migrações no remoto (sem *_test_only.sql)
+        if: steps.pre.outputs.tem_remoto == 'true'
         run: supabase --workdir "$DEPLOY_WORKDIR" db push --linked
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -224,10 +283,12 @@ jobs:
       # automaticamente nesta fase (F0). Baixar e commitar manualmente até isso virar um passo
       # de bot dedicado.
       - name: Gerar tipos TS a partir do schema remoto
+        if: steps.pre.outputs.tem_remoto == 'true'
         run: supabase --workdir "$DEPLOY_WORKDIR" gen types typescript --linked > database.types.ts
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       - uses: actions/upload-artifact@v4
+        if: steps.pre.outputs.tem_remoto == 'true'
         with:
           name: database-types
           path: database.types.ts
