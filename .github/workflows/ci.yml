@@ -109,7 +109,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          # Versão PINADA, não `latest`. Dois motivos, ambos medidos: (1) `latest` faz a action
+          # resolver a release mais nova pela API do GitHub sem autenticação, e isso estourou o
+          # rate limit no run 34297820989 ("Failed to resolve latest Supabase CLI release: rate
+          # limit exceeded") — vermelho que não é defeito de código e some sozinho, que é o pior
+          # tipo de vermelho; (2) `latest` muda a versão do CLI sob os pés do CI sem ninguém
+          # decidir. Esta é a versão da máquina onde a suíte foi provada. Subir é decisão, não
+          # acidente: mude aqui e veja a suíte de RLS ficar verde antes de commitar.
+          version: 2.109.1
       # `pg_prove` (harness TAP) não vem com o runner nem com o Supabase CLI — é o mesmo
       # pacote Perl que o auditor-rls usou para validar a suíte localmente
       # (TAP::Parser::SourceHandler::pgTAP). Tenta o pacote do sistema primeiro (mais rápido,
@@ -227,7 +234,7 @@ jobs:
       - uses: supabase/setup-cli@v1
         if: steps.pre.outputs.tem_remoto == 'true'
         with:
-          version: latest
+          version: 2.109.1  # pinada — ver comentário no job rls-test
       # Filtro obrigatório antes de qualquer push remoto. `20260904122300_pgtap_test_only.sql`
       # (e qualquer futura migração terminada em `_test_only.sql`) instala a extensão pgtap —
       # necessária em local/CI para o job rls-test, mas NUNCA em staging/produção: extensão de
