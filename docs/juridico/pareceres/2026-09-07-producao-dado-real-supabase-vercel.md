@@ -484,12 +484,12 @@ resposta é a mesma e o pedido sobe ao orquestrador em vez de virar exceção.
 
 **Portão A — libera hoje**
 
-- [ ] `devops`/dona: Supabase em `sa-east-1` (A1)
-- [ ] dona: direção de região por escrito no registro de operações (A2)
+- [x] `devops`/dona: Supabase em `sa-east-1` (A1) — **verificado 2026-09-11**: organização Breeze, projeto `breeze`, `sa-east-1`
+- [x] dona: direção de região por escrito no registro de operações (A2) — `registro-operacoes.md` §2.1, 2026-09-11
 - [ ] dona: aceitar e arquivar DPAs + snapshot de subprocessadores (A3)
-- [ ] orquestrador: designar quem escreve `docs/juridico/registro-operacoes.md` — spec no §4.3 (A4)
+- [x] orquestrador: designar quem escreve `docs/juridico/registro-operacoes.md` — spec no §4.3 (A4) — **escrito em 2026-09-11, quatro dias depois de o acervo subir**
 - [ ] `devops`: env vars só em Production; Preview/Development sem credencial de produção (A5)
-- [ ] `devops`: Deployment Protection antes do primeiro deploy (A6)
+- [x] `devops`: Deployment Protection antes do primeiro deploy (A6) — **ligada em todas as implantações em 2026-09-11; o domínio de produção ficou aberto de 2026-09-07 até então** (D19)
 - [ ] dona: MFA em Supabase, Vercel e GitHub (A7)
 - [ ] dona: nomear a organização Supabase com o nome do condomínio (§6.4)
 - [x] `juridico-lgpd`: verificar que o acervo não está rastreado pelo git — **confirmado**
@@ -512,7 +512,7 @@ resposta é a mesma e o pedido sobe ao orquestrador em vez de virar exceção.
 
 **Portão C — vetado até**
 
-- [ ] ingestão: etapa de redação de CPF/RG antes do chunk (C1)
+- [x] ingestão: etapa de redação de CPF/RG antes do chunk (C1) — `lib/ingestao/redacao.ts`; **verificado em produção**: 0 CPF formatado em páginas e chunks
 - [ ] `editor`: inspecionar a qualificação das partes na Convenção antes de `publicos` (C2)
 - [ ] `editor`: rodar `checklist-publicacao.md` documento a documento (C3–C5)
 

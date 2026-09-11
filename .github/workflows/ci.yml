@@ -188,11 +188,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # ---------------------------------------------------------------------------------
-      # Ainda NÃO existe projeto Supabase hospedado (dívida D2; a criação é o item A1 do
-      # Portão A em docs/juridico/pareceres/2026-09-07-producao-dado-real-supabase-vercel.md,
-      # e é ação da dona do projeto, não deste workflow). Sem os secrets, `link` falharia com
-      # project-ref vazio e deixaria a `main` permanentemente vermelha por um motivo que não é
-      # defeito de código — ruído que treina todo mundo a ignorar o X.
+      # O projeto hospedado EXISTE (produção, desde 2026-09-07), mas os três secrets não estão
+      # no GitHub — então este job não deploya, e migração só chega a produção por push manual
+      # da máquina da mantenedora. Push manual NÃO passa pelo filtro de *_test_only.sql abaixo:
+      # foi exatamente assim que `pgtap` foi parar em produção (dívida D19). O conserto é pôr os
+      # secrets no GitHub e fazer deste job o único caminho. Sem eles, `link` falharia com
+      # project-ref vazio e deixaria a `main` vermelha por um motivo que não é defeito de código.
       #
       # Este passo é o oposto de um `continue-on-error` silencioso: ele DIZ, no log e no
       # sumário do run, que o deploy não aconteceu e por quê. E não afrouxa nada do que
