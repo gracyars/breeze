@@ -56,6 +56,17 @@ Ver `docs/ops/backup.md` §3, passo a passo completo. Resumo da divisão de trab
    o projeto nascer com o schema — depois disso, releases seguem pelo CI). **Confirmar que
    `20260904122300_pgtap_test_only.sql` não vai — o filtro do job `db-push` já cuida disso quando
    o push for feito pelo CI; se for feito manualmente neste passo 0, filtrar à mão.**
+
+   > **Executado em 2026-09-07 — e o filtro à mão não aconteceu.** O push manual levou
+   > `pgtap` a produção. Corrigido em 2026-09-11: `drop extension pgtap` (sem `CASCADE`) +
+   > `supabase migration repair --status reverted 20260904122300 --linked`, provado por
+   > `db push --dry-run` com o diretório filtrado ("Remote database is up to date").
+   >
+   > **Regra que vale daqui em diante: nunca `supabase db push` contra o remoto a partir da raiz
+   > do repositório.** A CLI enxerga `20260904122300_pgtap_test_only.sql` como pendente e
+   > **reinstala `pgtap` em produção** — sem erro, sem aviso. O único caminho de migração para
+   > produção é o job `db-push` do CI. "Filtrar à mão" é instrução que depende de alguém lembrar,
+   > e já falhou uma vez.
 5. Configurar Auth: habilitar TOTP (`[auth.mfa.totp]` — equivalente hospedado da flag que D1
    precisou ligar no `config.toml` local), habilitar magic link, desabilitar signup público (só
    `editor` cadastra pessoa — ver SPEC §2.1).

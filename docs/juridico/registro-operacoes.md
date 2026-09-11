@@ -151,10 +151,11 @@ as duas colunas é justamente o que este registro existe para não esconder.
 | MFA nas contas administrativas da dona (Supabase, Vercel, GitHub) | **`[A CONFIRMAR — A7]`** |
 | Proteção do domínio de produção | **Vercel Authentication em todas as implantações, ligada em 2026-09-11** — antes disso, só as URLs de implantação eram protegidas e o domínio de produção respondia a qualquer um (D19) |
 | Backup cifrado em conta separada | **Não existe** (B4) |
-| Extensão de teste fora de produção | **Violada:** `pgtap` 1.3.3 instalada no projeto hospedado — a migração `_test_only` subiu por push manual, sem o filtro do CI. Remoção pendente, dono `eng-supabase` (D19) |
+| Extensão de teste fora de produção | **Corrigida em 2026-09-11.** `pgtap` 1.3.3 esteve instalada em produção de 2026-09-07 até então — a migração `_test_only` subiu por push manual, sem o filtro do CI. Removida e histórico reparado (D19). Push manual da raiz do repositório a reinstalaria: o único caminho de migração é o CI |
 
 ## 9. Revisões
 
 | Data | Quem | O que mudou |
 |---|---|---|
 | 2026-09-11 | orquestrador, a partir do parecer de 2026-09-07 | Criação. Estado de produção medido por contagem, sem leitura de conteúdo. Registrado o atraso em relação à subida do acervo |
+| 2026-09-11 | orquestrador | `pgtap` removido de produção; §8 atualizado |
