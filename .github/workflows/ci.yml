@@ -188,7 +188,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # ---------------------------------------------------------------------------------
-      # O projeto hospedado EXISTE (produção, desde 2026-09-07), mas os três secrets não estão
+      # O projeto hospedado EXISTE (produção, desde 2026-09-07), mas os secrets não estão todos
       # no GitHub — então este job não deploya, e migração só chega a produção por push manual
       # da máquina da mantenedora. Push manual NÃO passa pelo filtro de *_test_only.sql abaixo:
       # foi exatamente assim que `pgtap` foi parar em produção (dívida D19). O conserto é pôr os
@@ -200,7 +200,7 @@ jobs:
       # importa: `db-push` nunca fez parte de `ci-gate` (o required status check) — a cadeia
       # lint→typecheck→unit→a11y→rls continua barrando merge com a mesma dureza.
       #
-      # No dia em que os três secrets existirem, este passo passa a ser um no-op e o deploy
+      # No dia em que os dois secrets existirem, este passo passa a ser um no-op e o deploy
       # roda sozinho. Não há flag para lembrar de virar.
       # ---------------------------------------------------------------------------------
       - name: Verificar se o projeto remoto já existe
@@ -211,10 +211,13 @@ jobs:
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
           set -euo pipefail
+          # A senha do banco NÃO é exigida: a CLI 2.109.1 faz `link` e `db push` só com o token de
+          # acesso (cria um papel de login temporário pela API de gestão). Medido em 2026-09-11 com
+          # `db push --dry-run` contra produção e `SUPABASE_DB_PASSWORD` removida do ambiente. Se
+          # o secret existir, é repassado; se não, não faz falta — um segredo a menos para vazar.
           faltando=()
           [ -n "${SUPABASE_PROJECT_ID:-}" ]    || faltando+=("SUPABASE_PROJECT_ID")
           [ -n "${SUPABASE_ACCESS_TOKEN:-}" ]  || faltando+=("SUPABASE_ACCESS_TOKEN")
-          [ -n "${SUPABASE_DB_PASSWORD:-}" ]   || faltando+=("SUPABASE_DB_PASSWORD")
           if [ "${#faltando[@]}" -eq 0 ]; then
             echo "tem_remoto=true" >> "$GITHUB_OUTPUT"
             echo "Secrets presentes — migrações serão aplicadas no projeto remoto."
