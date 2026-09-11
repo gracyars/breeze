@@ -98,11 +98,15 @@ etapa vermelha.
 seguintes ficam `skipped` — e o GitHub trata `skipped` como requisito satisfeito em branch
 protection por padrão, o que abriria um jeito de mergear com CI quebrado. Por isso existe o job
 `ci-gate`: roda sempre (`if: always()`), inspeciona o resultado de cada job da cadeia e falha de
-verdade se qualquer um não foi `success`. **É `ci-gate` — e só ele — que deve ser marcado como
-"required status check"** quando este repositório ganhar um remoto no GitHub (branch protection
-de `main`). Pendência registrada em `docs/ops/divida-tecnica.md`; enquanto não houver remoto,
-não há como configurar branch protection de verdade — o gate roda e falha corretamente hoje, mas
-"barrar o merge" no sentido do GitHub só existe depois desse passo manual.
+verdade se qualquer um não foi `success`. **`ci-gate` — e só ele — é o
+"required status check"** da branch protection de `main`, ligada em 2026-09-11 junto com a
+publicação do repositório (`strict`, sem force push, sem apagar a branch).
+
+**O que a trava não faz, de propósito:** `enforce_admins` está desligado. Ela barra merge de PR
+com CI vermelho, mas a administradora ainda consegue fazer push direto em `main` — que é o fluxo
+de trabalho de hoje, com uma pessoa só. Ligar `enforce_admins` obriga toda mudança a passar por PR
+com `ci-gate` verde; é decisão de fluxo, não de configuração, e o gatilho natural é a chegada de
+uma segunda pessoa com escrita no repositório.
 
 `.github/workflows/backup.yml` roda `scripts/backup.sh` semanalmente — ver
 `docs/ops/backup.md` e `docs/ops/runbook-restauracao.md`.

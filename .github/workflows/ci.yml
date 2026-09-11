@@ -2,8 +2,8 @@ name: CI
 
 # Ordem obrigatória (SPEC §1.2): lint, typecheck, testes unitários, testes de a11y, testes de
 # RLS, supabase db push. Nenhum deploy passa com qualquer etapa vermelha — cada job depende do
-# anterior via `needs`. O job `ci-gate` é o único que deve virar "required status check" na
-# branch protection do GitHub (pendência registrada em docs/ops/divida-tecnica.md) — ver o
+# anterior via `needs`. O job `ci-gate` é o único "required status check" da branch
+# protection de `main` (ligada em 2026-09-11 — ver README.md, seção CI/CD) — ver o
 # comentário no próprio job para o motivo de não ser `rls-test` diretamente.
 on:
   push:
@@ -111,7 +111,7 @@ jobs:
         with:
           # Versão PINADA, não `latest`. Dois motivos, ambos medidos: (1) `latest` faz a action
           # resolver a release mais nova pela API do GitHub sem autenticação, e isso estourou o
-          # rate limit no run 34297820989 ("Failed to resolve latest Supabase CLI release: rate
+          # rate limit em 2026-09-09 ("Failed to resolve latest Supabase CLI release: rate
           # limit exceeded") — vermelho que não é defeito de código e some sozinho, que é o pior
           # tipo de vermelho; (2) `latest` muda a versão do CLI sob os pés do CI sem ninguém
           # decidir. Esta é a versão da máquina onde a suíte foi provada. Subir é decisão, não
@@ -160,9 +160,9 @@ jobs:
   # barra o merge se `lint` (ou qualquer job anterior na cadeia) quebrar — o PR aparenta estar
   # verde. `ci-gate` roda sempre (`if: always()`), inspeciona o resultado de cada job da
   # cadeia via `needs.*.result` e falha de verdade (não "pula") se qualquer um não foi
-  # `success`. É ESTE job — e só ele — que deve ser marcado como "required status check" na
-  # branch protection do repositório quando ele existir no GitHub (ver README.md, seção CI/CD,
-  # e a pendência registrada em docs/ops/divida-tecnica.md).
+  # `success`. É ESTE job — e só ele — o "required status check" da branch protection de
+  # `main`. Renomear o job (o `name:` abaixo) quebra a trava em silêncio: a regra passa a exigir
+  # um check que nunca mais aparece. Se renomear, atualize a branch protection no mesmo PR.
   # ---------------------------------------------------------------------------------------
   ci-gate:
     name: CI gate (obrigatório para merge)
