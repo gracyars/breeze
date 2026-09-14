@@ -4,9 +4,16 @@ name: Backup semanal
 # roda o pg_dump + espelho de Storage próprios (scripts/backup.sh) toda semana, para uma conta
 # de backup separada, em provedor diferente do de produção.
 #
-# Pendente de configuração humana antes de ativar (ver relatório de entrega do devops):
+# Pendente de configuração humana antes de ativar (dívida B4 do parecer de 2026-09-07):
 # secrets SUPABASE_DB_URL, BACKUP_STORAGE_BUCKET, BACKUP_ENCRYPTION_KEY, BACKUP_RCLONE_CONFIG
 # (arquivo `rclone.conf` em base64, gerado uma vez localmente com `rclone config`).
+#
+# Enquanto esses secrets não existirem, o job NÃO tenta fazer backup e NÃO grita "falhou": diz
+# "não configurado", em aviso e no sumário do run, e termina verde. A diferença não é cosmética.
+# Este workflow rodou todas as segundas desde que existe e falhou todas as vezes, com a mensagem
+# "escalar imediatamente" — alerta semanal sem nada a escalar é alerta que se aprende a ignorar,
+# e é o MESMO alerta que precisa ser crível no dia em que houver backup de verdade e ele quebrar.
+# A ausência de backup não é esquecida por isso: é a B4, que bloqueia o Portão B.
 on:
   schedule:
     # Toda segunda-feira às 06:00 UTC (03:00 America/Sao_Paulo).
@@ -21,18 +28,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Instalar pg_dump 17 e rclone
+      - name: Verificar se o backup está configurado
+        id: pre
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_RCLONE_CONFIG: ${{ secrets.BACKUP_RCLONE_CONFIG }}
+          BACKUP_STORAGE_BUCKET: ${{ secrets.BACKUP_STORAGE_BUCKET }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
         run: |
+          set -euo pipefail
+          faltando=()
+          for v in SUPABASE_DB_URL BACKUP_RCLONE_CONFIG BACKUP_STORAGE_BUCKET BACKUP_ENCRYPTION_KEY; do
+            [ -n "${!v:-}" ] || faltando+=("$v")
+          done
+          if [ "${#faltando[@]}" -eq 0 ]; then
+            echo "configurado=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configurado=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Backup NÃO configurado::Não há backup deste projeto. Secrets ausentes: ${faltando[*]}. Dívida B4 — bloqueia o Portão B."
+            {
+              echo "### Backup não executado — não configurado"
+              echo
+              echo "**Não existe backup do Breeze.** Isto não é uma falha do backup: é a ausência dele."
+              echo
+              echo "Secrets ausentes: \`${faltando[*]}\`"
+              echo
+              echo "Fecha com o item **B4** — \`docs/ops/backup.md\` §3 e o parecer de 2026-09-07."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # `postgresql-client-17` NÃO existe nos repositórios do Ubuntu 24.04 (noble) — o runner só
+      # chega à 16, e a tentativa morria com "E: Unable to locate package postgresql-client-17".
+      # A 17 vem do repositório oficial do PostgreSQL (PGDG), adicionado abaixo. E precisa ser a
+      # 17 mesmo: produção roda Postgres 17.6, e `pg_dump` recusa servidor mais novo que ele.
+      - name: Instalar pg_dump 17 e rclone
+        if: steps.pre.outputs.configurado == 'true'
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17 gnupg
+          pg_dump --version
           curl https://rclone.org/install.sh | sudo bash
 
       - name: Configurar rclone a partir do secret
+        if: steps.pre.outputs.configurado == 'true'
         run: |
           mkdir -p ~/.config/rclone
           echo "${{ secrets.BACKUP_RCLONE_CONFIG }}" | base64 --decode > ~/.config/rclone/rclone.conf
 
       - name: Rodar backup
+        if: steps.pre.outputs.configurado == 'true'
         run: ./scripts/backup.sh
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -42,8 +92,10 @@ jobs:
           BACKUP_RCLONE_REMOTE: ${{ vars.BACKUP_RCLONE_REMOTE || 'breeze-backup' }}
           BACKUP_SUPABASE_STORAGE_REMOTE: ${{ vars.BACKUP_SUPABASE_STORAGE_REMOTE || 'breeze-prod-storage' }}
 
+      # `failure()` sozinho gritaria também quando não há backup configurado — e foi assim que
+      # este alerta virou ruído semanal. Agora ele só dispara quando havia backup para fazer.
       - name: Alertar em caso de falha
-        if: failure()
+        if: failure() && steps.pre.outputs.configurado == 'true'
         run: |
           echo "::error::Backup semanal falhou — escalar imediatamente (ver docs/ops/backup.md)."
           # Substituir por chamada real ao webhook de alerta quando configurado
